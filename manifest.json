@@ -4,6 +4,8 @@
   "description": "Extension to automate image generation and upload from Google Gemini",
   "permissions": ["storage", "activeTab", "scripting", "clipboardRead", "clipboardWrite"],
   "host_permissions": [
+    "*://ecomlap.com/*",
+    "*://*.ecomlap.com/*",
     "*://gemini.google.com/*",
     "*://ai.google.dev/*",
     "*://lh3.googleusercontent.com/*",
@@ -19,6 +21,8 @@
   "content_scripts": [
     {
       "matches": [
+        "*://ecomlap.com/*",
+        "*://*.ecomlap.com/*",
         "*://gemini.google.com/*",
         "*://ai.google.dev/*",
         "http://localhost:3000/*",
