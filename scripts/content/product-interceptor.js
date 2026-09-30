@@ -1,15 +1,27 @@
 /**
  * 16vibe Assistant - Product Interceptor & Synchronizer
  * 
- * Captures products from the current page (ecomlap.com / localhost:3000):
+ * Passively intercepts products when the page calls /api/products:
  * 1. Injects page script to hook window.fetch & XMLHttpRequest for /api/products
- * 2. Proactively fetches /api/products using active session credentials
- * 3. Scrapes DOM products or reads Next.js state as fallback
- * 4. Normalizes products and updates Zustand store & chrome.storage.local
+ * 2. Extracts and normalizes valid products (ensuring image_url exists)
+ * 3. Does NOT perform fake DOM scraping or overwrite valid store data
  */
 
 (function () {
     'use strict';
+
+    // Clear any previously corrupted ecomlap_products that had empty images
+    try {
+        chrome.storage.local.get(['ecomlap_products'], (res) => {
+            if (res && Array.isArray(res.ecomlap_products)) {
+                const hasInvalid = res.ecomlap_products.some(p => !p.image_url || p.image_url.trim() === '');
+                if (hasInvalid) {
+                    chrome.storage.local.remove(['ecomlap_products', 'last_products_sync']);
+                    console.log('[16vibe] Cleaned corrupted product cache with empty images');
+                }
+            }
+        });
+    } catch (e) {}
 
     /**
      * 1. Inject In-Page Network Interceptor into page context
@@ -112,11 +124,13 @@
         const name = p.title || p.name || p.product_name || p.handle || ('Sản phẩm #' + (idx + 1));
         
         let imageUrl = '';
-        if (typeof p.thumbnail === 'string') imageUrl = p.thumbnail;
-        else if (typeof p.image === 'string') imageUrl = p.image;
-        else if (typeof p.featured_image === 'string') imageUrl = p.featured_image;
+        if (typeof p.thumbnail === 'string' && p.thumbnail.trim()) imageUrl = p.thumbnail.trim();
+        else if (typeof p.image_url === 'string' && p.image_url.trim()) imageUrl = p.image_url.trim();
+        else if (typeof p.image === 'string' && p.image.trim()) imageUrl = p.image.trim();
+        else if (typeof p.featured_image === 'string' && p.featured_image.trim()) imageUrl = p.featured_image.trim();
         else if (Array.isArray(p.images) && p.images.length > 0) {
-            imageUrl = typeof p.images[0] === 'string' ? p.images[0] : (p.images[0]?.url || p.images[0]?.src || '');
+            const first = p.images[0];
+            imageUrl = typeof first === 'string' ? first : (first?.url || first?.src || '');
         } else if (p.image && typeof p.image === 'object') {
             imageUrl = p.image.url || p.image.src || '';
         }
@@ -140,6 +154,7 @@
             createdAt: p.createdAt || p.created_at || new Date().toISOString(),
             is_used: Boolean(p.is_used),
             is_skipped: Boolean(p.is_skipped),
+            prompt: p.prompt || '',
             raw: p
         };
     }
@@ -148,34 +163,37 @@
      * 4. Save to chrome.storage and broadcast to Product Manager store
      */
     function saveAndSyncProducts(normalizedList) {
+        // Only accept if list has items with VALID images
         if (!Array.isArray(normalizedList) || normalizedList.length === 0) return;
+        const validList = normalizedList.filter(p => p.image_url && p.image_url.length > 5);
+        if (validList.length === 0) return;
 
-        console.log(`[16vibe] Đồng bộ thành công ${normalizedList.length} sản phẩm từ trang hiện tại`);
+        console.log(`[16vibe] Đã bắt được ${validList.length} sản phẩm có hình ảnh từ API trang`);
 
         // Save to chrome.storage.local
         chrome.storage.local.set({
-            ecomlap_products: normalizedList,
+            ecomlap_products: validList,
             last_products_sync: Date.now()
         });
 
         // Trigger custom event for gemini-content.js listener
-        window.dispatchEvent(new CustomEvent('16vibe-sync-products', { detail: normalizedList }));
+        window.dispatchEvent(new CustomEvent('16vibe-sync-products', { detail: validList }));
 
         // Directly update Zustand store if accessible
         try {
             if (window.__16vibe_store && typeof window.__16vibe_store.setState === 'function') {
                 window.__16vibe_store.setState({
-                    ideas: normalizedList,
+                    ideas: validList,
                     stats: {
-                        total: normalizedList.length,
-                        used: normalizedList.filter(p => p.is_used).length,
-                        unused: normalizedList.filter(p => !p.is_used).length
+                        total: validList.length,
+                        used: validList.filter(p => p.is_used).length,
+                        unused: validList.filter(p => !p.is_used).length
                     },
                     pagination: {
                         current_page: 1,
                         last_page: 1,
-                        total: normalizedList.length,
-                        limit: normalizedList.length
+                        total: validList.length,
+                        limit: validList.length
                     }
                 });
             }
@@ -185,108 +203,7 @@
     }
 
     /**
-     * 5. Active fetch from page /api/products
-     */
-    async function fetchProductsFromCurrentSite() {
-        const origin = window.location.origin;
-        const isTargetSite = origin.includes('ecomlap.com') || origin.includes('localhost') || origin.includes('127.0.0.1');
-        if (!isTargetSite) return [];
-
-        try {
-            const res = await fetch('/api/products', {
-                method: 'GET',
-                headers: {
-                    'Accept': 'application/json'
-                },
-                credentials: 'include'
-            });
-
-            if (res.ok) {
-                const json = await res.json();
-                const list = extractProductList(json);
-                if (list.length > 0) {
-                    const normalized = list.map(normalizeProduct);
-                    saveAndSyncProducts(normalized);
-                    return normalized;
-                }
-            }
-        } catch (e) {
-            console.log('[16vibe] Direct fetch /api/products error:', e);
-        }
-
-        // Try DOM scraping fallback if network fetch was empty
-        const domList = scrapeDomProducts();
-        if (domList.length > 0) {
-            saveAndSyncProducts(domList);
-            return domList;
-        }
-
-        return [];
-    }
-
-    /**
-     * 6. DOM Scraper Fallback (for product tables or grids)
-     */
-    function scrapeDomProducts() {
-        const products = [];
-        try {
-            // Find product rows in table
-            const rows = document.querySelectorAll('table tbody tr');
-            if (rows.length > 0) {
-                rows.forEach((row, idx) => {
-                    const titleEl = row.querySelector('a[href*="/product"], .product-title, .title, td:nth-child(2), td:nth-child(3)');
-                    const imgEl = row.querySelector('img');
-                    if (titleEl || imgEl) {
-                        const title = titleEl ? titleEl.textContent.trim() : `Sản phẩm #${idx + 1}`;
-                        const imgSrc = imgEl ? (imgEl.src || imgEl.getAttribute('data-src') || '') : '';
-                        const priceEl = row.querySelector('.price, [class*="price"], td:nth-child(4)');
-                        const price = priceEl ? priceEl.textContent.trim() : 0;
-                        if (title && title.length > 1) {
-                            products.push({
-                                _id: `dom_${idx + 1}`,
-                                id: `dom_${idx + 1}`,
-                                name: title,
-                                image_url: imgSrc,
-                                tags: ['Page'],
-                                price: price,
-                                createdAt: new Date().toISOString(),
-                                is_used: false,
-                                is_skipped: false
-                            });
-                        }
-                    }
-                });
-            }
-
-            // Find product cards in grid
-            if (products.length === 0) {
-                const cards = document.querySelectorAll('.product-card, .product-item, [data-product-id]');
-                cards.forEach((card, idx) => {
-                    const titleEl = card.querySelector('.title, .product-title, h3, h4, a');
-                    const imgEl = card.querySelector('img');
-                    if (titleEl && imgEl) {
-                        products.push({
-                            _id: card.getAttribute('data-product-id') || `dom_card_${idx + 1}`,
-                            id: card.getAttribute('data-product-id') || `dom_card_${idx + 1}`,
-                            name: titleEl.textContent.trim(),
-                            image_url: imgEl.src || '',
-                            tags: ['Page'],
-                            price: 0,
-                            createdAt: new Date().toISOString(),
-                            is_used: false,
-                            is_skipped: false
-                        });
-                    }
-                });
-            }
-        } catch (e) {
-            console.warn('[16vibe] DOM scraping error:', e);
-        }
-        return products;
-    }
-
-    /**
-     * 7. Initialize
+     * 5. Initialize
      */
     function init() {
         injectNetworkHook();
@@ -300,33 +217,6 @@
                     const normalized = list.map(normalizeProduct);
                     saveAndSyncProducts(normalized);
                 }
-            }
-        });
-
-        // Expose manual trigger function on window
-        window.__16vibe_fetch_products = fetchProductsFromCurrentSite;
-
-        // Proactive fetch after page stabilizes
-        setTimeout(() => {
-            fetchProductsFromCurrentSite();
-        }, 1200);
-
-        // Also check if we have stored products to initialize store
-        chrome.storage.local.get(['ecomlap_products'], (res) => {
-            if (res && Array.isArray(res.ecomlap_products) && res.ecomlap_products.length > 0) {
-                setTimeout(() => {
-                    window.dispatchEvent(new CustomEvent('16vibe-sync-products', { detail: res.ecomlap_products }));
-                }, 500);
-            }
-        });
-
-        // Listen for messages from background/popup
-        chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-            if (msg.action === 'syncProductsFromPage') {
-                fetchProductsFromCurrentSite().then(prods => {
-                    sendResponse({ success: !0, count: prods.length });
-                });
-                return true;
             }
         });
     }
