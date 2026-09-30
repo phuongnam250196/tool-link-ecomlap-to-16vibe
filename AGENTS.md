@@ -1,12 +1,12 @@
-# EcomLap Gemini Assistant - AI Agent Guidelines & Architecture Reference
+# 16vibe Assistant - AI Agent Guidelines & Architecture Reference
 
-This document outlines the architecture, coding standards, message contracts, and guidelines for AI agents working on the **EcomLap Gemini Assistant** Chrome Extension project (`d:\workspace\tools\extension-gemini\extension-gemini`).
+This document outlines the architecture, coding standards, message contracts, and guidelines for AI agents working on the **16vibe Assistant** Chrome Extension project (`d:\workspace\tools\extension-gemini\extension-gemini`).
 
 ---
 
 ## 🏗️ Project Architecture Overview
 
-**EcomLap Gemini Assistant** is a **Chrome Extension (Manifest V3)** designed to automate AI image generation, prompt injection, and result synchronization between **Google Gemini (`gemini.google.com`)** and the **EcomLap E-Commerce Platform (`https://ecomlap.com`)**.
+**16vibe Assistant** is a **Chrome Extension (Manifest V3)** designed to automate AI image generation, prompt injection, and result synchronization between **Google Gemini (`gemini.google.com`)** and the **EcomLap E-Commerce Platform (`https://ecomlap.com`)**.
 
 ```
 d:\workspace\tools\extension-gemini\extension-gemini/

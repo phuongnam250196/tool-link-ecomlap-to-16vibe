@@ -1,5 +1,5 @@
 /**
- * EcomLap Configuration Module
+ * 16vibe Assistant Configuration Module
  * Loads settings from .env file with fallbacks
  */
 
@@ -52,7 +52,7 @@ export async function loadEnv() {
             SERVER_URL: env.BACKEND_URL || DEFAULT_CONFIG.BACKEND_URL,
         };
     } catch (err) {
-        console.warn('[EcomLap Config] Could not load .env file, using default values:', err);
+        console.warn('[16vibe Config] Could not load .env file, using default values:', err);
         return DEFAULT_CONFIG;
     }
 }

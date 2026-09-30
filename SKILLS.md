@@ -1,6 +1,6 @@
-# EcomLap Gemini Assistant - AI Agent & Developer Skills
+# 16vibe Assistant - AI Agent & Developer Skills
 
-This document details practical operational skills, recipes, debugging workflows, and maintenance guides for AI agents and human developers working on **EcomLap Gemini Assistant** (`d:\workspace\tools\extension-gemini\extension-gemini`).
+This document details practical operational skills, recipes, debugging workflows, and maintenance guides for AI agents and human developers working on **16vibe Assistant** (`d:\workspace\tools\extension-gemini\extension-gemini`).
 
 ---
 
@@ -174,7 +174,7 @@ When backend returns status `401` or `403`:
 4. Click **Load unpacked** button.
 5. Select the folder: `d:\workspace\tools\extension-gemini\extension-gemini`.
 6. Verify:
-   - Name: `EcomLap Gemini Assistant`
+   - Name: `16vibe Assistant`
    - Version: `1.0.0`
    - Service worker status: **active** (click "service worker" to open background DevTools).
 7. Navigate to `https://gemini.google.com/` and confirm that `#ecomlap-control-panel` loads at the bottom-right corner.

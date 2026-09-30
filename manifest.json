@@ -1,5 +1,5 @@
 {
-  "name": "EcomLap Gemini Assistant",
+  "name": "16vibe Assistant",
   "version": "1.0.0",
   "description": "Extension to automate image generation and upload from Google Gemini",
   "permissions": ["storage", "activeTab", "scripting", "clipboardRead", "clipboardWrite"],
@@ -51,7 +51,7 @@
       "128": "assets/images/logo-128.png"
     },
     "default_popup": "popup/popup.html",
-    "default_title": "EcomLap Gemini Assistant"
+    "default_title": "16vibe Assistant"
   },
   "web_accessible_resources": [
     {
