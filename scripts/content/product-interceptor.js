@@ -385,6 +385,23 @@
     }
 
     /**
+     * Check if a URL strictly targets the product list API (excludes /ai-status, /status, etc.)
+     */
+    function isProductListUrl(url) {
+        if (!url) return false;
+        const str = typeof url === 'string' ? url : (url.href || url.url || String(url));
+        if (str.includes('/ai-status') || str.includes('/status') || str.includes('/analytics')) return false;
+        try {
+            const base = typeof window !== 'undefined' && window.location ? window.location.origin : 'https://ecomlap.com';
+            const u = new URL(str, base);
+            const cleanPath = u.pathname.replace(/\/+$/, '');
+            return cleanPath === '/api/products';
+        } catch (e) {
+            return /\/api\/products(?:\/)?(?:\?|#|$)/.test(str);
+        }
+    }
+
+    /**
      * Look up the most recent URL called by the page matching /api/products
      */
     function findRecentProductsApiUrl() {
@@ -393,7 +410,7 @@
                 const entries = performance.getEntriesByType('resource');
                 for (let i = entries.length - 1; i >= 0; i--) {
                     const name = entries[i].name;
-                    if (name && (name.includes('/api/products') || name.includes('ecomlap.com/api/products'))) {
+                    if (name && isProductListUrl(name)) {
                         return name;
                     }
                 }
@@ -633,13 +650,17 @@
                     if (window.__16vibe_hook_installed) return;
                     window.__16vibe_hook_installed = true;
 
-                    const TARGET_PATH = '/api/products';
-                    const TARGET_FULL = 'ecomlap.com/api/products';
-
                     function isTarget(url) {
                         if (!url) return false;
                         const str = typeof url === 'string' ? url : (url.href || url.url || String(url));
-                        return str.includes(TARGET_PATH) || str.includes(TARGET_FULL);
+                        if (str.includes('/ai-status') || str.includes('/status') || str.includes('/analytics')) return false;
+                        try {
+                            const u = new URL(str, window.location.origin);
+                            const cleanPath = u.pathname.replace(/\/+$/, '');
+                            return cleanPath === '/api/products';
+                        } catch (e) {
+                            return /\/api\/products(?:\/)?(?:\?|#|$)/.test(str);
+                        }
                     }
 
                     // Monkey-patch window.fetch
