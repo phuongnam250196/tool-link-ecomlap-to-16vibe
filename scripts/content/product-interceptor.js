@@ -3,14 +3,17 @@
  * 
  * Intercepts products from ecomlap.com / localhost:3000:
  * 1. Prioritizes main_image_url for product images
- * 2. Accurately tracks category & filter API queries (e.g. /api/products?page=1&limit=30&sort_name=createdAt&sort_target=desc&category=...&with_total=true)
- * 3. Intercepts in-page fetch/XHR network requests at document_start
+ * 2. Captures authentication headers/tokens to reliably fetch all items (including 100+ per page)
+ * 3. Never overwrites valid image URLs with empty DOM-scraped placeholders
  * 4. Resolves all image URLs to absolute HTTPS URLs
  * 5. Broadcasts to Zustand store and persists to chrome.storage.local
  */
 
 (function () {
     'use strict';
+
+    // Global in-memory cache of valid product images
+    const imageCache = new Map(); // id or name -> valid imageUrl
 
     /**
      * Resolve any image URL (relative, protocol-relative, absolute) to full URL
@@ -61,13 +64,13 @@
         for (const item of candidates) {
             if (typeof item === 'string' && item.trim()) {
                 const resolved = resolveUrl(item.trim());
-                if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
+                if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD') && !resolved.includes('placeholder')) return resolved;
             }
             if (item && typeof item === 'object') {
                 const nested = item.main_image_url || item.url || item.src || item.file_url || item.path || item.thumbnail;
                 if (typeof nested === 'string' && nested.trim()) {
                     const resolved = resolveUrl(nested.trim());
-                    if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
+                    if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD') && !resolved.includes('placeholder')) return resolved;
                 }
             }
         }
@@ -79,13 +82,13 @@
                 for (const item of arr) {
                     if (typeof item === 'string' && item.trim()) {
                         const resolved = resolveUrl(item.trim());
-                        if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
+                        if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD') && !resolved.includes('placeholder')) return resolved;
                     }
                     if (item && typeof item === 'object') {
                         const nested = item.main_image_url || item.url || item.src || item.file_url || item.path;
                         if (typeof nested === 'string' && nested.trim()) {
                             const resolved = resolveUrl(nested.trim());
-                            if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
+                            if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD') && !resolved.includes('placeholder')) return resolved;
                         }
                     }
                 }
@@ -174,7 +177,20 @@
         
         // Priority to main_image_url
         const rawImg = p.main_image_url || p.main_image || p.mainImageUrl || p.mainImage || extractProductImage(p);
-        const imageUrl = resolveUrl(rawImg);
+        let imageUrl = resolveUrl(rawImg);
+
+        // Fallback to cache if image is missing/empty
+        if (!imageUrl || imageUrl.includes('placeholder')) {
+            const cached = imageCache.get(id) || imageCache.get(name);
+            if (cached) {
+                imageUrl = cached;
+            }
+        } else {
+            // Save valid image into cache
+            imageCache.set(id, imageUrl);
+            imageCache.set(name, imageUrl);
+        }
+
         const tags = extractProductTags(p);
 
         // Date resolution
@@ -234,6 +250,14 @@
         if (!Array.isArray(normalizedList)) return;
         if (normalizedList.length === 0 && !allowEmpty) return;
 
+        // Populate image cache
+        normalizedList.forEach(p => {
+            if (p.main_image_url && !p.main_image_url.includes('placeholder')) {
+                imageCache.set(p._id, p.main_image_url);
+                imageCache.set(p.name, p.main_image_url);
+            }
+        });
+
         console.log(`[16vibe] Đồng bộ thành công ${normalizedList.length} sản phẩm từ trang hiện tại`);
 
         // Save to chrome.storage.local
@@ -266,6 +290,50 @@
         } catch (e) {
             console.warn('[16vibe] Could not update __16vibe_store directly:', e);
         }
+    }
+
+    /**
+     * Get Authentication Headers (captured from network hook or localStorage)
+     */
+    function getAuthHeaders() {
+        const headers = {
+            'Accept': 'application/json'
+        };
+
+        // 1. From captured hook
+        if (window.__16vibe_auth_token) {
+            const token = window.__16vibe_auth_token;
+            headers['Authorization'] = token.startsWith('Bearer ') ? token : 'Bearer ' + token;
+            return headers;
+        }
+
+        // 2. From localStorage / sessionStorage
+        try {
+            const tokenKeys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token'];
+            for (const k of tokenKeys) {
+                const val = localStorage.getItem(k) || sessionStorage.getItem(k);
+                if (val && typeof val === 'string' && val.length > 15) {
+                    headers['Authorization'] = val.startsWith('Bearer ') ? val : 'Bearer ' + val;
+                    return headers;
+                }
+            }
+            for (let i = 0; i < localStorage.length; i++) {
+                const key = localStorage.key(i);
+                const val = localStorage.getItem(key);
+                if (val && val.startsWith('{') && val.includes('token')) {
+                    try {
+                        const parsed = JSON.parse(val);
+                        const t = parsed.token || parsed.accessToken || parsed.access_token || (parsed.user && parsed.user.token);
+                        if (t && typeof t === 'string' && t.length > 15) {
+                            headers['Authorization'] = t.startsWith('Bearer ') ? t : 'Bearer ' + t;
+                            return headers;
+                        }
+                    } catch (e) {}
+                }
+            }
+        } catch (e) {}
+
+        return headers;
     }
 
     /**
@@ -344,14 +412,33 @@
                 if (!el) return '';
                 const img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
                 if (img) {
-                    const src = img.currentSrc || img.src || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('data-lazy-src') || '';
-                    if (src && !src.includes('data:image/gif;base64,R0lGOD')) {
-                        return resolveUrl(src);
+                    const candidates = [
+                        img.getAttribute('data-src'),
+                        img.getAttribute('data-original'),
+                        img.getAttribute('data-lazy-src'),
+                        img.getAttribute('data-lazy'),
+                        img.getAttribute('data-url'),
+                        img.getAttribute('data-image'),
+                        img.getAttribute('data-img'),
+                        img.currentSrc,
+                        img.src
+                    ];
+                    for (const c of candidates) {
+                        if (c && typeof c === 'string' && c.trim()) {
+                            const s = c.trim();
+                            if (!s.includes('data:image/gif;base64,R0lGOD') && !s.includes('placeholder')) {
+                                return resolveUrl(s);
+                            }
+                        }
                     }
-                    const srcset = img.getAttribute('srcset');
+                    const srcset = img.getAttribute('srcset') || img.getAttribute('data-srcset');
                     if (srcset) {
                         const parts = srcset.split(',').map(s => s.trim().split(' ')[0]);
-                        if (parts.length > 0 && parts[0]) return resolveUrl(parts[0]);
+                        for (const p of parts) {
+                            if (p && !p.includes('data:image/gif;base64,R0lGOD') && !p.includes('placeholder')) {
+                                return resolveUrl(p);
+                            }
+                        }
                     }
                 }
                 const bgEl = el.querySelector('[style*="background-image"]') || (el.style && el.style.backgroundImage ? el : null);
@@ -368,7 +455,7 @@
                 rows.forEach((row, idx) => {
                     const titleEl = row.querySelector('a[href*="/product"], .product-title, .title, td:nth-child(2), td:nth-child(3)');
                     const title = titleEl ? titleEl.textContent.trim() : '';
-                    const imgSrc = getImageSrc(row);
+                    let imgSrc = getImageSrc(row);
                     const priceEl = row.querySelector('.price, [class*="price"], td:nth-child(4), td:nth-child(5)');
                     const price = priceEl ? priceEl.textContent.trim() : '';
                     const skuEl = row.querySelector('.sku, [class*="sku"]');
@@ -380,9 +467,16 @@
                         if (sku) tags.push(`SKU: ${sku}`);
                         if (tags.length === 0) tags.push('Product');
 
+                        const id = row.getAttribute('data-id') || row.getAttribute('data-product-id') || `dom_${idx + 1}`;
+                        
+                        // Check if we have cached image for this product
+                        if (!imgSrc && (imageCache.has(id) || imageCache.has(title))) {
+                            imgSrc = imageCache.get(id) || imageCache.get(title);
+                        }
+
                         products.push({
-                            _id: `dom_${idx + 1}`,
-                            id: `dom_${idx + 1}`,
+                            _id: id,
+                            id: id,
                             name: title,
                             image_url: imgSrc,
                             main_image_url: imgSrc,
@@ -403,7 +497,7 @@
                 cards.forEach((card, idx) => {
                     const titleEl = card.querySelector('.title, .product-title, h3, h4, h5, a');
                     const title = titleEl ? titleEl.textContent.trim() : '';
-                    const imgSrc = getImageSrc(card);
+                    let imgSrc = getImageSrc(card);
                     const priceEl = card.querySelector('.price, [class*="price"]');
                     const price = priceEl ? priceEl.textContent.trim() : '';
 
@@ -412,9 +506,14 @@
                         if (price) tags.push(price);
                         if (tags.length === 0) tags.push('Product');
 
+                        const id = card.getAttribute('data-product-id') || card.getAttribute('data-id') || `card_${idx + 1}`;
+                        if (!imgSrc && (imageCache.has(id) || imageCache.has(title))) {
+                            imgSrc = imageCache.get(id) || imageCache.get(title);
+                        }
+
                         products.push({
-                            _id: card.getAttribute('data-product-id') || `card_${idx + 1}`,
-                            id: card.getAttribute('data-product-id') || `card_${idx + 1}`,
+                            _id: id,
+                            id: id,
                             name: title,
                             image_url: imgSrc,
                             main_image_url: imgSrc,
@@ -477,9 +576,10 @@
         console.log('[16vibe] Đang lấy danh sách sản phẩm từ URL:', targetUrl);
 
         try {
+            const headers = getAuthHeaders();
             const res = await fetch(targetUrl, {
                 method: 'GET',
-                headers: { 'Accept': 'application/json' },
+                headers: headers,
                 credentials: 'include'
             });
 
@@ -546,12 +646,29 @@
                     const originalFetch = window.fetch;
                     window.fetch = async function(...args) {
                         const input = args[0];
+                        const init = args[1];
                         let url = '';
                         if (typeof input === 'string') {
                             url = input;
                         } else if (input && typeof input === 'object') {
                             url = input.url || input.href || String(input);
                         }
+
+                        // Capture auth token if present
+                        try {
+                            if (init && init.headers) {
+                                const h = init.headers;
+                                let auth = '';
+                                if (typeof h.get === 'function') {
+                                    auth = h.get('authorization') || h.get('Authorization');
+                                } else if (typeof h === 'object') {
+                                    auth = h.authorization || h.Authorization;
+                                }
+                                if (auth) {
+                                    window.__16vibe_auth_token = auth;
+                                }
+                            }
+                        } catch(e) {}
 
                         const response = await originalFetch.apply(this, args);
 
@@ -572,10 +689,18 @@
                     // Monkey-patch XMLHttpRequest
                     const originalOpen = XMLHttpRequest.prototype.open;
                     const originalSend = XMLHttpRequest.prototype.send;
+                    const originalSetHeader = XMLHttpRequest.prototype.setRequestHeader;
 
                     XMLHttpRequest.prototype.open = function(method, url) {
                         this._16vibeUrl = url;
                         return originalOpen.apply(this, arguments);
+                    };
+
+                    XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
+                        if (header && header.toLowerCase() === 'authorization' && value) {
+                            window.__16vibe_auth_token = value;
+                        }
+                        return originalSetHeader.apply(this, arguments);
                     };
 
                     XMLHttpRequest.prototype.send = function() {
@@ -660,6 +785,13 @@
         // Also check if we have stored products to initialize store
         chrome.storage.local.get(['ecomlap_products'], (res) => {
             if (res && Array.isArray(res.ecomlap_products) && res.ecomlap_products.length > 0) {
+                // Populate imageCache from stored items
+                res.ecomlap_products.forEach(p => {
+                    if (p.main_image_url && !p.main_image_url.includes('placeholder')) {
+                        imageCache.set(p._id, p.main_image_url);
+                        imageCache.set(p.name, p.main_image_url);
+                    }
+                });
                 setTimeout(() => {
                     window.dispatchEvent(new CustomEvent('16vibe-sync-products', { detail: res.ecomlap_products }));
                 }, 500);
