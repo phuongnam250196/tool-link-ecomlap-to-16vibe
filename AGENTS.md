@@ -150,6 +150,20 @@ BACKEND_URL=http://localhost:9000
 
 ---
 
+## 📡 API Call Monitor Widget
+
+When authenticated (`hmt-token` present in `chrome.storage.local`), the extension renders an API monitoring widget:
+- **Location**: Anchored vertically at the middle of the right screen edge (`top: 50%; right: 0; transform: translateY(-50%)`).
+- **Target URL**: Monitors whether the active page is calling `https://ecomlap.com/api/products` (or `/api/products`).
+- **Dual Detection Engine**:
+  1. **Background Service Worker**: Uses `chrome.webRequest.onBeforeRequest`, `onCompleted`, and `onErrorOccurred` to intercept network traffic without page overhead.
+  2. **Content Script (`api-monitor.js`)**: Injects an in-page interceptor monkey-patching `window.fetch` and `XMLHttpRequest` with `CustomEvent('16vibe-api-detect')` for immediate, real-time UI feedback.
+- **States**: `Idle` (waiting), `Calling` (in-flight request with pulsing amber indicator), `Detected / 200 OK` (glowing emerald badge with call counter & timestamp), `Error` (red indicator).
+- **Features**: Collapsible handle, call history list, reset log action.
+
+---
+
+
 
 ## ⚡ Core Rules & Best Practices for AI Agents
 

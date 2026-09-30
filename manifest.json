@@ -2,7 +2,14 @@
   "name": "16vibe Assistant",
   "version": "1.0.0",
   "description": "Extension to automate image generation and upload from Google Gemini",
-  "permissions": ["storage", "activeTab", "scripting", "clipboardRead", "clipboardWrite"],
+  "permissions": [
+    "storage",
+    "activeTab",
+    "scripting",
+    "clipboardRead",
+    "clipboardWrite",
+    "webRequest"
+  ],
   "host_permissions": [
     "*://ecomlap.com/*",
     "*://*.ecomlap.com/*",
@@ -29,12 +36,14 @@
         "http://127.0.0.1:3000/*"
       ],
       "js": [
-        "scripts/content/gemini-content.js"
+        "scripts/content/gemini-content.js",
+        "scripts/content/api-monitor.js"
       ],
       "css": [
         "assets/styles/gemini.css",
         "assets/styles/gemini-manager.css",
-        "assets/styles/design-ideas-manager.css"
+        "assets/styles/design-ideas-manager.css",
+        "assets/styles/api-monitor.css"
       ]
     }
   ],
