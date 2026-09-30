@@ -150,16 +150,19 @@ BACKEND_URL=http://localhost:9000
 
 ---
 
-## 📡 API Call Monitor Widget
+## 🛍️ Product Manager Widget & Product Interceptor
 
-When authenticated (`hmt-token` present in `chrome.storage.local`), the extension renders an API monitoring widget:
-- **Location**: Anchored vertically at the middle of the right screen edge (`top: 50%; right: 0; transform: translateY(-50%)`).
-- **Target URL**: Monitors whether the active page is calling `https://ecomlap.com/api/products` (or `/api/products`).
-- **Dual Detection Engine**:
-  1. **Background Service Worker**: Uses `chrome.webRequest.onBeforeRequest`, `onCompleted`, and `onErrorOccurred` to intercept network traffic without page overhead.
-  2. **Content Script (`api-monitor.js`)**: Injects an in-page interceptor monkey-patching `window.fetch` and `XMLHttpRequest` with `CustomEvent('16vibe-api-detect')` for immediate, real-time UI feedback.
-- **States**: `Idle` (waiting), `Calling` (in-flight request with pulsing amber indicator), `Detected / 200 OK` (glowing emerald badge with call counter & timestamp), `Error` (red indicator).
-- **Features**: Collapsible handle, call history list, reset log action.
+When authenticated (`hmt-token` present in `chrome.storage.local`), the extension renders the **Product Manager** widget:
+- **Location**: Anchored at the bottom-right corner of the screen (`bottom: 20px; right: 20px`).
+- **Modes**:
+  - **Mini Widget**: Compact floating button (`🛍️ Product Manager`) displaying current product count. Clicking expands into the full panel.
+  - **Full Panel**: Comprehensive product gallery & table view with search, pagination, bulk selection, and configuration controls.
+- **Product Synchronization & Interception (`product-interceptor.js`)**:
+  1. **In-Page Interceptor**: Hooks `window.fetch` and `XMLHttpRequest` for `/api/products` (e.g. `https://ecomlap.com/api/products`), extracting the response body and normalising products into the widget format.
+  2. **Active Fetch**: Proactively requests `/api/products` with active session credentials on `ecomlap.com`.
+  3. **DOM Scraper Fallback**: Extracts visible product information from tables or cards if network calls haven't populated yet.
+  4. **Live Store Sync**: Dispatches `16vibe-sync-products` and updates the React Zustand store directly for instant UI updates.
+  5. **Background Fallback**: `background.js` caches `ecomlap_products` in `chrome.storage.local` and serves them upon `getDesignIdeas`.
 
 ---
 

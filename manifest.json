@@ -36,14 +36,13 @@
         "http://127.0.0.1:3000/*"
       ],
       "js": [
-        "scripts/content/gemini-content.js",
-        "scripts/content/api-monitor.js"
+        "scripts/content/product-interceptor.js",
+        "scripts/content/gemini-content.js"
       ],
       "css": [
         "assets/styles/gemini.css",
         "assets/styles/gemini-manager.css",
-        "assets/styles/design-ideas-manager.css",
-        "assets/styles/api-monitor.css"
+        "assets/styles/design-ideas-manager.css"
       ]
     }
   ],
