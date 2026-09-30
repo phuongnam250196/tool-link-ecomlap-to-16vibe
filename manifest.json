@@ -8,11 +8,22 @@
     "*://ai.google.dev/*",
     "*://lh3.googleusercontent.com/*",
     "*://*.googleusercontent.com/*",
-    "*://*.amazonaws.com/*"
+    "*://*.amazonaws.com/*",
+    "http://localhost/*",
+    "http://127.0.0.1/*",
+    "http://localhost:3000/*",
+    "http://127.0.0.1:3000/*",
+    "http://localhost:9000/*",
+    "http://127.0.0.1:9000/*"
   ],
   "content_scripts": [
     {
-      "matches": ["*://gemini.google.com/*", "*://ai.google.dev/*"],
+      "matches": [
+        "*://gemini.google.com/*",
+        "*://ai.google.dev/*",
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
+      ],
       "js": [
         "scripts/content/gemini-content.js"
       ],
@@ -40,7 +51,12 @@
   },
   "web_accessible_resources": [
     {
-      "resources": ["assets/images/*", "assets/styles/*"],
+      "resources": [
+        ".env",
+        "scripts/config.js",
+        "assets/images/*",
+        "assets/styles/*"
+      ],
       "matches": ["<all_urls>"]
     }
   ],

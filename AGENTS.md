@@ -132,6 +132,25 @@ The extension uses `chrome.storage.local` to store state and credentials:
 
 ---
 
+## ⚙️ Environment Configuration (.env)
+
+The extension supports dynamic environment configuration via `.env` file at the root:
+
+```env
+# Frontend URL where extension is injected and active
+FRONTEND_URL=http://localhost:3000
+
+# Backend API server URL for saving data & queue management
+BACKEND_URL=http://localhost:9000
+```
+
+- **Runtime Loading**: `scripts/background.js` and `scripts/config.js` load `.env` via `chrome.runtime.getURL('.env')`.
+- **Modifying URLs**: To change the backend or frontend target, simply update `.env` and reload the extension in `chrome://extensions/`.
+- **Supported Hosts**: `manifest.json` permits `http://localhost/*`, `http://127.0.0.1/*`, `http://localhost:3000/*`, and `http://localhost:9000/*`.
+
+---
+
+
 ## ⚡ Core Rules & Best Practices for AI Agents
 
 1. **Manifest V3 Ephemeral Service Worker**:
