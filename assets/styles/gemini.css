@@ -1,0 +1,504 @@
+/* Control Panel Styles */
+#ecomlap-control-panel {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    width: 320px;
+    background: white;
+    border-radius: 12px;
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.15);
+    z-index: 999999;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+    font-size: 14px;
+    transition: all 0.3s ease;
+}
+
+/* Minimized state */
+#ecomlap-control-panel.minimized {
+    width: auto;
+    height: auto;
+}
+
+#ecomlap-control-panel.minimized .ecomlap-panel-content {
+    display: none;
+}
+
+.ecomlap-panel-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+    color: white;
+    border-radius: 12px 12px 0 0;
+    font-weight: 600;
+    cursor: move;
+}
+
+#ecomlap-toggle {
+    background: rgba(255, 255, 255, 0.2);
+    border: none;
+    color: white;
+    width: 24px;
+    height: 24px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 18px;
+    line-height: 1;
+    padding: 0;
+}
+
+#ecomlap-toggle:hover {
+    background: rgba(255, 255, 255, 0.3);
+}
+
+.ecomlap-panel-content {
+    padding: 16px;
+    max-height: 600px;
+    overflow-y: auto;
+}
+
+.ecomlap-status {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px 12px;
+    background: #f5f5f5;
+    border-radius: 8px;
+    margin-bottom: 16px;
+    font-size: 13px;
+}
+
+.ecomlap-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+}
+
+.ecomlap-status-dot.connected {
+    background: #4caf50;
+    box-shadow: 0 0 8px rgba(76, 175, 80, 0.5);
+}
+
+.ecomlap-status-dot.disconnected {
+    background: #f44336;
+}
+
+.ecomlap-section {
+    margin-bottom: 16px;
+}
+
+.ecomlap-section label {
+    display: block;
+    margin-bottom: 8px;
+    font-weight: 500;
+    color: #333;
+}
+
+.ecomlap-section select,
+.ecomlap-section textarea {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    font-family: inherit;
+    font-size: 13px;
+    margin-bottom: 8px;
+}
+
+.ecomlap-section select:focus,
+.ecomlap-section textarea:focus {
+    outline: none;
+    border-color: #667eea;
+}
+
+.ecomlap-section textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.ecomlap-section button {
+    width: 100%;
+    padding: 10px;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.ecomlap-section button:hover {
+    background: #5568d3;
+}
+
+.ecomlap-section button:active {
+    transform: scale(0.98);
+}
+
+/* Toggle Switch */
+.ecomlap-switch {
+    position: relative;
+    display: inline-block;
+    width: 48px;
+    height: 24px;
+}
+
+.ecomlap-switch input {
+    opacity: 0;
+    width: 0;
+    height: 0;
+}
+
+.ecomlap-slider {
+    position: absolute;
+    cursor: pointer;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background-color: #ccc;
+    transition: 0.3s;
+    border-radius: 24px;
+}
+
+.ecomlap-slider:before {
+    position: absolute;
+    content: "";
+    height: 18px;
+    width: 18px;
+    left: 3px;
+    bottom: 3px;
+    background-color: white;
+    transition: 0.3s;
+    border-radius: 50%;
+}
+
+input:checked + .ecomlap-slider {
+    background-color: #667eea;
+}
+
+input:checked + .ecomlap-slider:before {
+    transform: translateX(24px);
+}
+
+/* Activity Log */
+.ecomlap-log {
+    margin-top: 16px;
+    border-top: 1px solid #eee;
+    padding-top: 12px;
+}
+
+.ecomlap-log-title {
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: #333;
+}
+
+.ecomlap-log-content {
+    max-height: 150px;
+    overflow-y: auto;
+    background: #f9f9f9;
+    border-radius: 6px;
+    padding: 8px;
+}
+
+.ecomlap-log-entry {
+    font-size: 12px;
+    padding: 4px 0;
+    color: #666;
+    border-bottom: 1px solid #eee;
+}
+
+.ecomlap-log-entry:last-child {
+    border-bottom: none;
+}
+
+.ecomlap-log-entry.success {
+    color: #4caf50;
+}
+
+.ecomlap-log-entry.error {
+    color: #f44336;
+}
+
+.ecomlap-log-entry.warning {
+    color: #ff9800;
+}
+
+/* Upload Button on Images */
+.ecomlap-upload-btn {
+    position: absolute;
+    bottom: 10px;
+    right: 10px;
+    padding: 8px 16px;
+    background: #667eea;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    transition: all 0.2s;
+}
+
+.ecomlap-upload-btn:hover {
+    background: #5568d3;
+    transform: translateY(-2px);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* Scrollbar */
+.ecomlap-panel-content::-webkit-scrollbar,
+.ecomlap-log-content::-webkit-scrollbar {
+    width: 6px;
+}
+
+.ecomlap-panel-content::-webkit-scrollbar-track,
+.ecomlap-log-content::-webkit-scrollbar-track {
+    background: #f1f1f1;
+    border-radius: 10px;
+}
+
+.ecomlap-panel-content::-webkit-scrollbar-thumb,
+.ecomlap-log-content::-webkit-scrollbar-thumb {
+    background: #888;
+    border-radius: 10px;
+}
+
+.ecomlap-panel-content::-webkit-scrollbar-thumb:hover,
+.ecomlap-log-content::-webkit-scrollbar-thumb:hover {
+    background: #555;
+}
+
+/* Design Ideas Section */
+.ecomlap-ideas-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.btn-link {
+    background: none;
+    border: none;
+    color: #667eea;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 0;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.btn-link:hover {
+    text-decoration: underline;
+}
+
+#ecomlap-ideas-count {
+    font-weight: 600;
+    color: #667eea;
+}
+
+.ecomlap-ideas-stats {
+    display: flex;
+    justify-content: space-around;
+    padding: 8px;
+    background: #f9f9f9;
+    border-radius: 6px;
+    margin-bottom: 8px;
+    font-size: 12px;
+}
+
+.stat-item {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.stat-item i {
+    font-size: 14px;
+}
+
+.ecomlap-ideas-list {
+    max-height: 250px;
+    overflow-y: auto;
+    background: #f9f9f9;
+    border-radius: 6px;
+    padding: 4px;
+    margin-bottom: 8px;
+}
+
+.ecomlap-idea-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 8px;
+    background: white;
+    border-radius: 6px;
+    margin-bottom: 4px;
+    cursor: pointer;
+    transition: all 0.2s;
+    border: 1px solid #eee;
+}
+
+.ecomlap-idea-item:hover {
+    border-color: #667eea;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+}
+
+.idea-thumb {
+    position: relative;
+    width: 40px;
+    height: 40px;
+    flex-shrink: 0;
+    border-radius: 4px;
+    overflow: hidden;
+    border: 1px solid #ddd;
+    background: #f5f5f5;
+}
+
+.idea-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.idea-badge {
+    position: absolute;
+    top: 2px;
+    right: 2px;
+    background: #4caf50;
+    color: white;
+    font-size: 8px;
+    padding: 2px 4px;
+    border-radius: 3px;
+    font-weight: 600;
+}
+
+.idea-badge.used {
+    background: #4caf50;
+}
+
+.idea-info {
+    flex: 1;
+    min-width: 0;
+}
+
+.idea-name {
+    font-size: 12px;
+    font-weight: 500;
+    color: #333;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 2px;
+}
+
+.idea-meta {
+    font-size: 10px;
+    color: #999;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+.idea-tags {
+    color: #667eea;
+}
+
+.idea-date {
+    color: #999;
+}
+
+.idea-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.btn-icon {
+    background: none;
+    border: none;
+    color: #999;
+    cursor: pointer;
+    padding: 4px;
+    border-radius: 4px;
+    transition: all 0.2s;
+}
+
+.btn-icon:hover {
+    background: #f0f0f0;
+    color: #667eea;
+}
+
+.btn-primary.btn-sm {
+    padding: 8px 12px;
+    font-size: 12px;
+    margin-top: 4px;
+}
+
+.w-100 {
+    width: 100%;
+}
+
+.p-10 {
+    padding: 10px;
+}
+
+.text-center {
+    text-align: center;
+}
+
+.text-muted {
+    color: #999;
+}
+
+.text-success {
+    color: #4caf50;
+}
+
+/* Login Prompt Styles */
+#ecomlap-control-panel.minimized {
+    width: auto;
+}
+
+#ecomlap-control-panel.minimized .ecomlap-panel-header {
+    border-radius: 12px;
+}
+
+#ecomlap-login-btn {
+    background: #4caf50;
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    margin-left: 8px;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+#ecomlap-login-btn:hover {
+    background: #45a049;
+    transform: scale(1.05);
+}
+
+/* Ideas Manager Button */
+.btn-success {
+    background: #4caf50;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    transition: all 0.2s;
+}
+
+.btn-success:hover {
+    background: #45a049;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 8px rgba(76, 175, 80, 0.3);
+}

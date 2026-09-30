@@ -1,0 +1,48 @@
+{
+  "name": "EcomLap Gemini Assistant",
+  "version": "1.0.0",
+  "description": "Extension to automate image generation and upload from Google Gemini",
+  "permissions": ["storage", "activeTab", "scripting", "clipboardRead", "clipboardWrite"],
+  "host_permissions": [
+    "*://gemini.google.com/*",
+    "*://ai.google.dev/*",
+    "*://lh3.googleusercontent.com/*",
+    "*://*.googleusercontent.com/*",
+    "*://*.amazonaws.com/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["*://gemini.google.com/*", "*://ai.google.dev/*"],
+      "js": [
+        "scripts/content/gemini-content.js"
+      ],
+      "css": [
+        "assets/styles/gemini.css",
+        "assets/styles/gemini-manager.css",
+        "assets/styles/design-ideas-manager.css"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "scripts/background.js"
+  },
+  "icons": {
+    "16": "assets/images/logo-16.png",
+    "128": "assets/images/logo-128.png"
+  },
+  "action": {
+    "default_icon": {
+      "16": "assets/images/logo-16.png",
+      "128": "assets/images/logo-128.png"
+    },
+    "default_popup": "popup/popup.html",
+    "default_title": "EcomLap Gemini Assistant"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["assets/images/*", "assets/styles/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "manifest_version": 3
+}
