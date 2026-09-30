@@ -37,14 +37,28 @@
         "http://127.0.0.1:3000/*"
       ],
       "js": [
-        "scripts/content/product-interceptor.js",
+        "scripts/content/product-interceptor.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "*://ecomlap.com/*",
+        "*://*.ecomlap.com/*",
+        "*://gemini.google.com/*",
+        "*://ai.google.dev/*",
+        "http://localhost:3000/*",
+        "http://127.0.0.1:3000/*"
+      ],
+      "js": [
         "scripts/content/gemini-content.js"
       ],
       "css": [
         "assets/styles/gemini.css",
         "assets/styles/gemini-manager.css",
         "assets/styles/design-ideas-manager.css"
-      ]
+      ],
+      "run_at": "document_idle"
     }
   ],
   "background": {

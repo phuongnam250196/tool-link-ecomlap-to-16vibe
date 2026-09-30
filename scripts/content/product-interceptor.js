@@ -1,12 +1,12 @@
 /**
  * 16vibe Assistant - Product Interceptor & Synchronizer
  * 
- * Captures products from the current page (ecomlap.com / localhost:3000):
- * 1. Resolves all image URLs to absolute HTTPS URLs
- * 2. Extracts complete product information (Title, Images, Tags, Price, SKU, Status)
- * 3. Intercepts in-page API calls to /api/products
- * 4. Scrapes DOM products with high-fidelity image resolution (currentSrc, data-src, srcset)
- * 5. Updates React Zustand store and chrome.storage.local for immediate display
+ * Intercepts products from ecomlap.com / localhost:3000:
+ * 1. Prioritizes main_image_url for product images
+ * 2. Accurately tracks category API queries (e.g. /api/products?page=1&limit=30&sort_name=createdAt&sort_target=desc&category=...&with_total=true)
+ * 3. Intercepts in-page fetch/XHR network requests at document_start
+ * 4. Resolves all image URLs to absolute HTTPS URLs
+ * 5. Broadcasts to Zustand store and persists to chrome.storage.local
  */
 
 (function () {
@@ -23,7 +23,10 @@
         if (url.startsWith('//')) return 'https:' + url;
         if (url.startsWith('http://') || url.startsWith('https://')) return url;
 
-        const base = typeof window !== 'undefined' && window.location ? window.location.origin : 'https://ecomlap.com';
+        const base = typeof window !== 'undefined' && window.location && window.location.origin && !window.location.origin.startsWith('chrome-extension')
+            ? window.location.origin
+            : 'https://ecomlap.com';
+
         if (url.startsWith('/')) {
             return base + url;
         }
@@ -31,15 +34,29 @@
     }
 
     /**
-     * Extract best available image URL from product object
+     * Extract best available image URL from product object (Prioritizes main_image_url)
      */
     function extractProductImage(p) {
         if (!p || typeof p !== 'object') return '';
 
-        // 1. Direct image properties
+        // 1. Direct image properties - Priority to main_image_url as requested
         const candidates = [
-            p.image_url, p.imageUrl, p.thumbnail, p.image, p.featured_image, p.featuredImage,
-            p.photo, p.picture, p.img, p.src, p.url, p.preview_image
+            p.main_image_url,
+            p.main_image,
+            p.mainImageUrl,
+            p.mainImage,
+            p.image_url,
+            p.imageUrl,
+            p.thumbnail,
+            p.image,
+            p.featured_image,
+            p.featuredImage,
+            p.photo,
+            p.picture,
+            p.img,
+            p.src,
+            p.url,
+            p.preview_image
         ];
         for (const item of candidates) {
             if (typeof item === 'string' && item.trim()) {
@@ -47,7 +64,7 @@
                 if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
             }
             if (item && typeof item === 'object') {
-                const nested = item.url || item.src || item.file_url || item.path || item.thumbnail;
+                const nested = item.main_image_url || item.url || item.src || item.file_url || item.path || item.thumbnail;
                 if (typeof nested === 'string' && nested.trim()) {
                     const resolved = resolveUrl(nested.trim());
                     if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
@@ -65,7 +82,7 @@
                         if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
                     }
                     if (item && typeof item === 'object') {
-                        const nested = item.url || item.src || item.file_url || item.path;
+                        const nested = item.main_image_url || item.url || item.src || item.file_url || item.path;
                         if (typeof nested === 'string' && nested.trim()) {
                             const resolved = resolveUrl(nested.trim());
                             if (resolved && !resolved.includes('data:image/gif;base64,R0lGOD')) return resolved;
@@ -99,6 +116,9 @@
             else if (p.category.name) tags.push(p.category.name);
             else if (p.category.title) tags.push(p.category.title);
         }
+        if (p.category_name && typeof p.category_name === 'string') {
+            tags.push(p.category_name);
+        }
         if (Array.isArray(p.categories)) {
             p.categories.forEach(c => {
                 if (typeof c === 'string') tags.push(c);
@@ -110,6 +130,9 @@
         // Price
         if (p.price != null && p.price !== '') {
             const priceStr = typeof p.price === 'number' ? `$${p.price.toFixed(2)}` : `${p.price}`;
+            tags.push(priceStr);
+        } else if (p.regular_price != null && p.regular_price !== '') {
+            const priceStr = typeof p.regular_price === 'number' ? `$${p.regular_price.toFixed(2)}` : `${p.regular_price}`;
             tags.push(priceStr);
         }
 
@@ -148,7 +171,10 @@
     function normalizeProduct(p, idx) {
         const id = String(p._id || p.id || p.product_id || p.sku || ('prod_' + (idx + 1)));
         const name = p.title || p.name || p.product_name || p.productTitle || p.handle || ('Sản phẩm #' + (idx + 1));
-        const imageUrl = extractProductImage(p);
+        
+        // Priority to main_image_url
+        const rawImg = p.main_image_url || p.main_image || p.mainImageUrl || p.mainImage || extractProductImage(p);
+        const imageUrl = resolveUrl(rawImg);
         const tags = extractProductTags(p);
 
         // Date resolution
@@ -165,8 +191,9 @@
             id: id,
             name: name,
             image_url: imageUrl,
+            main_image_url: imageUrl,
             tags: tags,
-            price: p.price || p.regular_price || 0,
+            price: p.price != null ? p.price : (p.regular_price || 0),
             createdAt: dateStr,
             is_used: Boolean(p.is_used),
             is_skipped: Boolean(p.is_skipped),
@@ -181,14 +208,22 @@
     function extractProductList(json) {
         if (!json) return [];
         if (Array.isArray(json)) return json;
-        if (json.data && Array.isArray(json.data)) return json.data;
-        if (json.data && Array.isArray(json.data.products)) return json.data.products;
-        if (json.data && Array.isArray(json.data.items)) return json.data.items;
-        if (json.data && Array.isArray(json.data.docs)) return json.data.docs;
+        if (json.data) {
+            if (Array.isArray(json.data)) return json.data;
+            if (Array.isArray(json.data.products)) return json.data.products;
+            if (Array.isArray(json.data.items)) return json.data.items;
+            if (Array.isArray(json.data.docs)) return json.data.docs;
+            if (Array.isArray(json.data.list)) return json.data.list;
+            if (Array.isArray(json.data.results)) return json.data.results;
+            if (Array.isArray(json.data.data)) return json.data.data;
+            if (Array.isArray(json.data.rows)) return json.data.rows;
+        }
         if (Array.isArray(json.products)) return json.products;
         if (Array.isArray(json.items)) return json.items;
         if (Array.isArray(json.docs)) return json.docs;
-        if (json.result && Array.isArray(json.result)) return json.result;
+        if (Array.isArray(json.result)) return json.result;
+        if (Array.isArray(json.list)) return json.list;
+        if (Array.isArray(json.rows)) return json.rows;
         return [];
     }
 
@@ -233,12 +268,77 @@
     }
 
     /**
-     * DOM Scraper with high-fidelity image resolution
+     * Detect category ID from current page URL, query params, or DOM
+     */
+    function detectCategoryFromPage() {
+        try {
+            // 1. URL search params (e.g. ?category=6a53cad5edb60a74ce6a0f0e)
+            const searchParams = new URLSearchParams(window.location.search);
+            if (searchParams.get('category')) return searchParams.get('category');
+            if (searchParams.get('categoryId')) return searchParams.get('categoryId');
+            if (searchParams.get('category_id')) return searchParams.get('category_id');
+            if (searchParams.get('cat')) return searchParams.get('cat');
+
+            // 2. Pathname (e.g. /category/6a53cad5edb60a74ce6a0f0e or /categories/6a53cad5edb60a74ce6a0f0e)
+            const path = window.location.pathname;
+            const catMatch = path.match(/\/(?:category|categories|danh-muc|collection|collections)\/([a-f0-9]{24}|[a-zA-Z0-9_-]+)/i);
+            if (catMatch && catMatch[1]) return catMatch[1];
+
+            // 3. Match 24-character hex MongoDB ObjectId anywhere in path
+            const mongoIdMatch = path.match(/\/([a-f0-9]{24})(?:\/|$)/i);
+            if (mongoIdMatch && mongoIdMatch[1]) return mongoIdMatch[1];
+
+            // 4. Hash params (e.g. #category=... or #/category/...)
+            const hash = window.location.hash;
+            if (hash) {
+                const hashParams = new URLSearchParams(hash.replace(/^[#/?]+/, ''));
+                if (hashParams.get('category')) return hashParams.get('category');
+                const hashMatch = hash.match(/(?:category|categories)\/([a-f0-9]{24}|[a-zA-Z0-9_-]+)/i);
+                if (hashMatch && hashMatch[1]) return hashMatch[1];
+            }
+
+            // 5. Next.js state if present
+            if (window.__NEXT_DATA__ && window.__NEXT_DATA__.query) {
+                const q = window.__NEXT_DATA__.query;
+                if (q.category) return q.category;
+                if (q.id && /^[a-f0-9]{24}$/i.test(q.id)) return q.id;
+            }
+
+            // 6. Active category element in DOM
+            const activeEl = document.querySelector('[data-category-id], [data-category], .active[data-id], .category-active');
+            if (activeEl) {
+                const cid = activeEl.getAttribute('data-category-id') || activeEl.getAttribute('data-category') || activeEl.getAttribute('data-id');
+                if (cid) return cid;
+            }
+        } catch (e) {}
+
+        return null;
+    }
+
+    /**
+     * Look up the most recent URL called by the page matching /api/products
+     */
+    function findRecentProductsApiUrl() {
+        try {
+            if (typeof performance !== 'undefined' && typeof performance.getEntriesByType === 'function') {
+                const entries = performance.getEntriesByType('resource');
+                for (let i = entries.length - 1; i >= 0; i--) {
+                    const name = entries[i].name;
+                    if (name && (name.includes('/api/products') || name.includes('ecomlap.com/api/products'))) {
+                        return name;
+                    }
+                }
+            }
+        } catch (e) {}
+        return null;
+    }
+
+    /**
+     * DOM Scraper fallback with high-fidelity image resolution
      */
     function scrapeDomProducts() {
         const products = [];
         try {
-            // Helper to get image from DOM element
             function getImageSrc(el) {
                 if (!el) return '';
                 const img = el.querySelector('img') || (el.tagName === 'IMG' ? el : null);
@@ -247,14 +347,12 @@
                     if (src && !src.includes('data:image/gif;base64,R0lGOD')) {
                         return resolveUrl(src);
                     }
-                    // Check srcset
                     const srcset = img.getAttribute('srcset');
                     if (srcset) {
                         const parts = srcset.split(',').map(s => s.trim().split(' ')[0]);
                         if (parts.length > 0 && parts[0]) return resolveUrl(parts[0]);
                     }
                 }
-                // Check background-image
                 const bgEl = el.querySelector('[style*="background-image"]') || (el.style && el.style.backgroundImage ? el : null);
                 if (bgEl && bgEl.style && bgEl.style.backgroundImage) {
                     const match = bgEl.style.backgroundImage.match(/url\(['"]?(.*?)['"]?\)/);
@@ -286,6 +384,7 @@
                             id: `dom_${idx + 1}`,
                             name: title,
                             image_url: imgSrc,
+                            main_image_url: imgSrc,
                             tags: tags,
                             price: price,
                             createdAt: new Date().toISOString(),
@@ -317,6 +416,7 @@
                             id: card.getAttribute('data-product-id') || `card_${idx + 1}`,
                             name: title,
                             image_url: imgSrc,
+                            main_image_url: imgSrc,
                             tags: tags,
                             price: price,
                             createdAt: new Date().toISOString(),
@@ -334,16 +434,36 @@
     }
 
     /**
-     * Active fetch from current site
+     * Active fetch from current site with exact parameters
      */
     async function fetchProductsFromCurrentSite() {
         const origin = window.location.origin;
         const isTargetSite = origin.includes('ecomlap.com') || origin.includes('localhost') || origin.includes('127.0.0.1');
         if (!isTargetSite) return [];
 
+        // 1. Try to use the exact URL that the page recently requested
+        let targetUrl = findRecentProductsApiUrl();
+
+        // 2. If not found in resource timings, build query matching ecomlap specification
+        if (!targetUrl) {
+            const category = detectCategoryFromPage();
+            const params = new URLSearchParams({
+                page: '1',
+                limit: '30',
+                sort_name: 'createdAt',
+                sort_target: 'desc',
+                with_total: 'true'
+            });
+            if (category) {
+                params.set('category', category);
+            }
+            targetUrl = `/api/products?${params.toString()}`;
+        }
+
+        console.log('[16vibe] Đang lấy danh sách sản phẩm từ URL:', targetUrl);
+
         try {
-            // Try with session credentials
-            const res = await fetch('/api/products', {
+            const res = await fetch(targetUrl, {
                 method: 'GET',
                 headers: { 'Accept': 'application/json' },
                 credentials: 'include'
@@ -357,8 +477,12 @@
                     saveAndSyncProducts(normalized);
                     return normalized;
                 }
+            } else {
+                console.warn('[16vibe] API fetch returned status:', res.status);
             }
-        } catch (e) {}
+        } catch (e) {
+            console.warn('[16vibe] Error fetching products:', e);
+        }
 
         // Fallback to Next.js hydrated state if available
         try {
@@ -387,16 +511,23 @@
      * Inject In-Page Network Interceptor into page context
      */
     function injectNetworkHook() {
+        if (window.__16vibe_network_hook_injected) return;
+        window.__16vibe_network_hook_injected = true;
+
         try {
             const script = document.createElement('script');
             script.textContent = `
                 (function() {
+                    if (window.__16vibe_hook_installed) return;
+                    window.__16vibe_hook_installed = true;
+
                     const TARGET_PATH = '/api/products';
                     const TARGET_FULL = 'ecomlap.com/api/products';
 
                     function isTarget(url) {
-                        if (!url || typeof url !== 'string') return false;
-                        return url.includes(TARGET_PATH) || url.includes(TARGET_FULL);
+                        if (!url) return false;
+                        const str = typeof url === 'string' ? url : (url.href || url.url || String(url));
+                        return str.includes(TARGET_PATH) || str.includes(TARGET_FULL);
                     }
 
                     // Monkey-patch window.fetch
@@ -406,8 +537,8 @@
                         let url = '';
                         if (typeof input === 'string') {
                             url = input;
-                        } else if (input && input.url) {
-                            url = input.url;
+                        } else if (input && typeof input === 'object') {
+                            url = input.url || input.href || String(input);
                         }
 
                         const response = await originalFetch.apply(this, args);
@@ -417,7 +548,7 @@
                                 const clone = response.clone();
                                 clone.json().then(data => {
                                     window.dispatchEvent(new CustomEvent('16vibe-products-captured', {
-                                        detail: { products: data, url, source: 'fetch', time: Date.now() }
+                                        detail: { products: data, url: url, source: 'fetch', time: Date.now() }
                                     }));
                                 }).catch(() => {});
                             } catch(e) {}
@@ -450,10 +581,32 @@
                         }
                         return originalSend.apply(this, arguments);
                     };
+
+                    // Intercept SPA navigation (pushState / replaceState)
+                    const originalPushState = history.pushState;
+                    history.pushState = function(...args) {
+                        const ret = originalPushState.apply(this, args);
+                        window.dispatchEvent(new CustomEvent('16vibe-route-changed', { detail: { url: window.location.href } }));
+                        return ret;
+                    };
+                    const originalReplaceState = history.replaceState;
+                    history.replaceState = function(...args) {
+                        const ret = originalReplaceState.apply(this, args);
+                        window.dispatchEvent(new CustomEvent('16vibe-route-changed', { detail: { url: window.location.href } }));
+                        return ret;
+                    };
                 })();
             `;
-            (document.head || document.documentElement).appendChild(script);
-            script.remove();
+            const parent = document.head || document.documentElement;
+            if (parent) {
+                parent.appendChild(script);
+                script.remove();
+            } else {
+                document.addEventListener('DOMContentLoaded', () => {
+                    (document.head || document.documentElement).appendChild(script);
+                    script.remove();
+                });
+            }
         } catch (e) {
             console.warn('[16vibe] Could not inject network hook:', e);
         }
@@ -471,10 +624,19 @@
             if (detail && detail.products) {
                 const list = extractProductList(detail.products);
                 if (list.length > 0) {
+                    console.log(`[16vibe] Bắt được ${list.length} sản phẩm từ mạng:`, detail.url);
                     const normalized = list.map(normalizeProduct);
                     saveAndSyncProducts(normalized);
                 }
             }
+        });
+
+        // Listen for SPA route changes
+        window.addEventListener('16vibe-route-changed', () => {
+            setTimeout(fetchProductsFromCurrentSite, 400);
+        });
+        window.addEventListener('popstate', () => {
+            setTimeout(fetchProductsFromCurrentSite, 400);
         });
 
         // Expose manual trigger function on window
@@ -504,6 +666,9 @@
             }
         });
     }
+
+    // Run network hook injection immediately at document_start
+    injectNetworkHook();
 
     if (document.readyState === 'loading') {
         document.addEventListener('DOMContentLoaded', init);
