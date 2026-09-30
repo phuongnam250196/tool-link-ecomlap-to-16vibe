@@ -3,7 +3,7 @@
  * 
  * Intercepts products from ecomlap.com / localhost:3000:
  * 1. Prioritizes main_image_url for product images
- * 2. Accurately tracks category API queries (e.g. /api/products?page=1&limit=30&sort_name=createdAt&sort_target=desc&category=...&with_total=true)
+ * 2. Accurately tracks category & filter API queries (e.g. /api/products?page=1&limit=30&sort_name=createdAt&sort_target=desc&category=...&with_total=true)
  * 3. Intercepts in-page fetch/XHR network requests at document_start
  * 4. Resolves all image URLs to absolute HTTPS URLs
  * 5. Broadcasts to Zustand store and persists to chrome.storage.local
@@ -230,8 +230,9 @@
     /**
      * Save to chrome.storage and broadcast to Product Manager store
      */
-    function saveAndSyncProducts(normalizedList) {
-        if (!Array.isArray(normalizedList) || normalizedList.length === 0) return;
+    function saveAndSyncProducts(normalizedList, allowEmpty) {
+        if (!Array.isArray(normalizedList)) return;
+        if (normalizedList.length === 0 && !allowEmpty) return;
 
         console.log(`[16vibe] Đồng bộ thành công ${normalizedList.length} sản phẩm từ trang hiện tại`);
 
@@ -444,19 +445,32 @@
         // 1. Try to use the exact URL that the page recently requested
         let targetUrl = findRecentProductsApiUrl();
 
-        // 2. If not found in resource timings, build query matching ecomlap specification
+        // 2. If not found in resource timings, build query matching current page filters
         if (!targetUrl) {
+            const urlParams = new URLSearchParams(window.location.search);
             const category = detectCategoryFromPage();
             const params = new URLSearchParams({
-                page: '1',
-                limit: '30',
-                sort_name: 'createdAt',
-                sort_target: 'desc',
+                page: urlParams.get('page') || '1',
+                limit: urlParams.get('limit') || '30',
+                sort_name: urlParams.get('sort_name') || 'createdAt',
+                sort_target: urlParams.get('sort_target') || 'desc',
                 with_total: 'true'
             });
             if (category) {
                 params.set('category', category);
             }
+            const search = urlParams.get('search') || urlParams.get('q') || urlParams.get('keyword');
+            if (search) {
+                params.set('search', search);
+            }
+            // Check active search input in DOM
+            try {
+                const searchInput = document.querySelector('input[type="search"], input[name="search"], input[name="q"], input[placeholder*="Tìm"], input[placeholder*="search" i]');
+                if (searchInput && searchInput.value && searchInput.value.trim() && !params.has('search')) {
+                    params.set('search', searchInput.value.trim());
+                }
+            } catch (e) {}
+
             targetUrl = `/api/products?${params.toString()}`;
         }
 
@@ -472,11 +486,9 @@
             if (res.ok) {
                 const json = await res.json();
                 const list = extractProductList(json);
-                if (list.length > 0) {
-                    const normalized = list.map(normalizeProduct);
-                    saveAndSyncProducts(normalized);
-                    return normalized;
-                }
+                const normalized = list.map(normalizeProduct);
+                saveAndSyncProducts(normalized, true);
+                return normalized;
             } else {
                 console.warn('[16vibe] API fetch returned status:', res.status);
             }
@@ -491,7 +503,7 @@
                 const nextList = pp.products || pp.items || (pp.data && pp.data.products);
                 if (Array.isArray(nextList) && nextList.length > 0) {
                     const normalized = nextList.map(normalizeProduct);
-                    saveAndSyncProducts(normalized);
+                    saveAndSyncProducts(normalized, true);
                     return normalized;
                 }
             }
@@ -623,11 +635,9 @@
             const detail = e.detail;
             if (detail && detail.products) {
                 const list = extractProductList(detail.products);
-                if (list.length > 0) {
-                    console.log(`[16vibe] Bắt được ${list.length} sản phẩm từ mạng:`, detail.url);
-                    const normalized = list.map(normalizeProduct);
-                    saveAndSyncProducts(normalized);
-                }
+                console.log(`[16vibe] Bắt được ${list.length} sản phẩm từ mạng:`, detail.url);
+                const normalized = list.map(normalizeProduct);
+                saveAndSyncProducts(normalized, true);
             }
         });
 
