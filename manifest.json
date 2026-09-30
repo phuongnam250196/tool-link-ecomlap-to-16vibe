@@ -11,6 +11,7 @@
     "webRequest"
   ],
   "host_permissions": [
+    "<all_urls>",
     "*://ecomlap.com/*",
     "*://*.ecomlap.com/*",
     "*://gemini.google.com/*",
