@@ -797,6 +797,7 @@
 
         // Expose manual trigger function on window
         window.__16vibe_fetch_products = fetchProductsFromCurrentSite;
+        window.__16vibe_getAuthHeaders = getAuthHeaders;
 
         // Proactive sync on target page after load
         setTimeout(() => {

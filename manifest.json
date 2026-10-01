@@ -51,12 +51,14 @@
         "http://127.0.0.1:3000/*"
       ],
       "js": [
-        "scripts/content/gemini-content.js"
+        "scripts/content/gemini-content.js",
+        "scripts/content/link-16vibe-modal.js"
       ],
       "css": [
         "assets/styles/gemini.css",
         "assets/styles/gemini-manager.css",
-        "assets/styles/design-ideas-manager.css"
+        "assets/styles/design-ideas-manager.css",
+        "assets/styles/link-16vibe-modal.css"
       ],
       "run_at": "document_idle"
     }
@@ -84,7 +86,9 @@
         "assets/images/*",
         "assets/styles/*"
       ],
-      "matches": ["<all_urls>"]
+      "matches": [
+        "<all_urls>"
+      ]
     }
   ],
   "manifest_version": 3
