@@ -40,7 +40,13 @@ case "getInkvibeMetadata":
                     var spData = (results[4].status === "fulfilled" && results[4].value && results[4].value.shipping_profiles) || [];
 
                     var categories = catsData.map(function(c) {
-                        return { id: c.id, name: c.name || c.title || c.handle, handle: c.handle };
+                        return {
+                            id: c.id,
+                            name: c.name || c.title || c.handle,
+                            handle: c.handle,
+                            parent_category_id: c.parent_category_id || null,
+                            rank: c.rank != null ? c.rank : 0
+                        };
                     });
 
                     var collections = colsData.map(function(c) {

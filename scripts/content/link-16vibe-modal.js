@@ -6,10 +6,11 @@
  * 2. Auto-injecting modal styles to guarantee UI visibility
  * 3. Fetching all active personalization configs from https://ecomlap.com/api/product-personalization-configs?status=active&limit=100
  *    via Main World authenticated bridge + deep JWT token search
- * 4. Fetching store metadata (all 11 categories, 39 collections, trending tags) from Inkvibe (localhost:9000)
- * 5. Interactive Inkvibe Tags suggestion badges for quick appending
- * 6. Dynamic placeholder insertion ({{item_name}}, {{item_sku}}, etc.)
- * 7. Batch linking products to Inkvibe database
+ * 4. Fetching store metadata (all 11 categories in tree hierarchy, 39 collections, trending tags) from Inkvibe (localhost:9000)
+ * 5. Hierarchical tree select for categories with parent-child branch visualizers and breadcrumb path indicator
+ * 6. Interactive Inkvibe Tags suggestion badges for quick appending
+ * 7. Dynamic placeholder insertion ({{item_name}}, {{item_sku}}, etc.)
+ * 8. Batch linking products to Inkvibe database
  */
 
 (function () {
@@ -175,7 +176,6 @@
 
     /**
      * Fetch personalization configs from ecomlap.com
-     * Dual strategy: in-page Main World bridge + direct fetch with full token discovery
      */
     function fetchPersonalizationConfigs() {
         return new Promise(async (resolve) => {
@@ -229,7 +229,7 @@
                 console.warn('[16vibe] Direct fetch error:', e);
             }
 
-            // 3. Timeout handler (8 seconds) - never return fake 4 mock items
+            // 3. Timeout handler (8 seconds)
             setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
@@ -272,6 +272,60 @@
                 });
             }
         });
+    }
+
+    /**
+     * Build hierarchical category tree from flat category list
+     */
+    function buildCategoryTree(categories) {
+        if (!Array.isArray(categories) || categories.length === 0) return [];
+        
+        const byId = new Map();
+        categories.forEach(c => byId.set(c.id, { ...c, children: [] }));
+
+        const roots = [];
+        byId.forEach(item => {
+            if (item.parent_category_id && byId.has(item.parent_category_id)) {
+                byId.get(item.parent_category_id).children.push(item);
+            } else {
+                roots.push(item);
+            }
+        });
+
+        const sortFn = (a, b) => (Number(a.rank || 0) - Number(b.rank || 0)) || a.name.localeCompare(b.name);
+        roots.sort(sortFn);
+        byId.forEach(item => item.children.sort(sortFn));
+
+        const flattened = [];
+        function traverse(node, depth, pathSoFar, isLastChild, parentPrefixes) {
+            const currentPath = pathSoFar ? (pathSoFar + ' > ' + node.name) : node.name;
+            let prefix = '';
+            if (depth === 0) {
+                prefix = '📁 ';
+            } else {
+                prefix = parentPrefixes + (isLastChild ? '└── ' : '├── ') + '📄 ';
+            }
+
+            flattened.push({
+                id: node.id,
+                name: node.name,
+                displayName: prefix + node.name,
+                fullPath: currentPath,
+                depth: depth
+            });
+
+            const nextPrefix = depth === 0 ? '　　' : parentPrefixes + (isLastChild ? '　　' : '│　');
+            node.children.forEach((child, idx) => {
+                const isLast = idx === node.children.length - 1;
+                traverse(child, depth + 1, currentPath, isLast, nextPrefix);
+            });
+        }
+
+        roots.forEach((root) => {
+            traverse(root, 0, '', false, '');
+        });
+
+        return flattened;
     }
 
     /**
@@ -444,15 +498,16 @@
                                 </select>
                             </div>
 
-                            <!-- Danh mục sản phẩm -->
+                            <!-- Danh mục sản phẩm (Hierarchical Tree Select) -->
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-category">
                                     <span>Danh mục sản phẩm (Categories)</span>
-                                    <span class="vibe-form-label-hint" id="vibe-hint-category-count">Inkvibe DB</span>
+                                    <span class="vibe-form-label-hint" id="vibe-hint-category-count">Dạng cây Inkvibe</span>
                                 </label>
-                                <select class="vibe-select" id="vibe-select-category">
-                                    <option value="">-- Đang tải danh mục... --</option>
+                                <select class="vibe-select" id="vibe-select-category" style="font-family: monospace, -apple-system, BlinkMacSystemFont, sans-serif;">
+                                    <option value="">-- Đang tải cây danh mục... --</option>
                                 </select>
+                                <div id="vibe-category-path-indicator" style="font-size: 11px; font-weight: 600; color: #2563eb; margin-top: 4px; display: none;"></div>
                             </div>
 
                             <!-- Bộ sưu tập -->
@@ -630,7 +685,7 @@
     }
 
     /**
-     * Populate Inkvibe Metadata dropdowns (all categories, collections & tags)
+     * Populate Inkvibe Metadata dropdowns (tree categories, collections & tags)
      */
     async function loadInkvibeMetadataDropdowns() {
         const data = await fetchInkvibeMetadata();
@@ -661,20 +716,45 @@
             });
         }
 
-        // 3. Product Categories - Render ALL categories
+        // 3. Product Categories - Render HIERARCHICAL TREE SELECT
         const catSelect = document.getElementById('vibe-select-category');
         const catHint = document.getElementById('vibe-hint-category-count');
+        const catPathIndicator = document.getElementById('vibe-category-path-indicator');
         if (catSelect && Array.isArray(data.categories)) {
             catSelect.innerHTML = '';
-            if (catHint) catHint.textContent = data.categories.length + ' danh mục từ Inkvibe';
+            const tree = buildCategoryTree(data.categories);
+            if (catHint) catHint.textContent = data.categories.length + ' danh mục (Dạng cây)';
             
-            data.categories.forEach((cat, idx) => {
+            tree.forEach((item, idx) => {
                 const opt = document.createElement('option');
-                opt.value = cat.id;
-                opt.textContent = cat.name || cat.title || cat.handle || cat.id;
+                opt.value = item.id;
+                opt.textContent = item.displayName;
+                opt.setAttribute('data-path', item.fullPath);
                 if (idx === 0) opt.selected = true;
                 catSelect.appendChild(opt);
             });
+
+            // Update path indicator on selection change
+            function updateCategoryPathDisplay() {
+                if (!catSelect || !catPathIndicator) return;
+                const selectedOpt = catSelect.options[catSelect.selectedIndex];
+                if (selectedOpt) {
+                    const fullPath = selectedOpt.getAttribute('data-path');
+                    if (fullPath && fullPath.includes('>')) {
+                        catPathIndicator.textContent = '📁 Đường dẫn: ' + fullPath;
+                        catPathIndicator.style.display = 'block';
+                    } else if (fullPath) {
+                        catPathIndicator.textContent = '📁 Danh mục gốc: ' + fullPath;
+                        catPathIndicator.style.display = 'block';
+                    } else {
+                        catPathIndicator.style.display = 'none';
+                    }
+                }
+            }
+
+            catSelect.removeEventListener('change', updateCategoryPathDisplay);
+            catSelect.addEventListener('change', updateCategoryPathDisplay);
+            updateCategoryPathDisplay();
         }
 
         // 4. Collections - Render ALL collections
