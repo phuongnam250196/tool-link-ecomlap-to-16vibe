@@ -687,6 +687,10 @@
                                 }
                                 if (auth) {
                                     window.__16vibe_auth_token = auth;
+                                    try {
+                                        document.documentElement.setAttribute('data-16vibe-auth', auth);
+                                        window.dispatchEvent(new CustomEvent('16vibe-token-captured', { detail: { token: auth } }));
+                                    } catch(e) {}
                                 }
                             }
                         } catch(e) {}
@@ -720,6 +724,10 @@
                     XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
                         if (header && header.toLowerCase() === 'authorization' && value) {
                             window.__16vibe_auth_token = value;
+                            try {
+                                document.documentElement.setAttribute('data-16vibe-auth', value);
+                                window.dispatchEvent(new CustomEvent('16vibe-token-captured', { detail: { token: value } }));
+                            } catch(e) {}
                         }
                         return originalSetHeader.apply(this, arguments);
                     };
@@ -753,6 +761,44 @@
                         window.dispatchEvent(new CustomEvent('16vibe-route-changed', { detail: { url: window.location.href } }));
                         return ret;
                     };
+
+                    // Initial token detection from localStorage
+                    try {
+                        const keys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token'];
+                        for (const k of keys) {
+                            const val = localStorage.getItem(k) || sessionStorage.getItem(k);
+                            if (val && typeof val === 'string' && val.length > 15) {
+                                const tok = val.startsWith('Bearer ') ? val : 'Bearer ' + val;
+                                window.__16vibe_auth_token = tok;
+                                document.documentElement.setAttribute('data-16vibe-auth', tok);
+                                break;
+                            }
+                        }
+                    } catch(e) {}
+
+                    // Listen for personalization config requests from extension
+                    window.addEventListener('16vibe-fetch-personalization', async function() {
+                        try {
+                            let auth = window.__16vibe_auth_token || document.documentElement.getAttribute('data-16vibe-auth') || '';
+                            const headers = { 'Accept': 'application/json' };
+                            if (auth) {
+                                headers['Authorization'] = auth.startsWith('Bearer ') ? auth : 'Bearer ' + auth;
+                            }
+                            const res = await originalFetch('/api/product-personalization-configs?status=active&limit=100', {
+                                method: 'GET',
+                                headers: headers,
+                                credentials: 'include'
+                            });
+                            if (res.ok) {
+                                const data = await res.json();
+                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: true, data: data } }));
+                            } else {
+                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, status: res.status } }));
+                            }
+                        } catch(err) {
+                            window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, error: err.message } }));
+                        }
+                    });
                 })();
             `;
             const parent = document.head || document.documentElement;

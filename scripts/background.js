@@ -5,44 +5,72 @@ case "getInkvibeMetadata":
         return new Promise(function(resolve) {
             chrome.storage.local.get(["medusa_api_key", "publishable_api_key", "admin_token", "hmt-token"], function(stored) {
                 var backendUrl = (reqData && reqData.serverUrl) || "http://localhost:9000";
-                var headers = { "Content-Type": "application/json" };
+                var publishableKey = (stored && stored.publishable_api_key) || "pk_b679123ab5a4f4ae470d804b825531f59760e12d88772b70b64875cd0aaa4a46";
+                var storeHeaders = {
+                    "Content-Type": "application/json",
+                    "x-publishable-api-key": publishableKey
+                };
+                var adminHeaders = { "Content-Type": "application/json" };
                 var token = stored && (stored.admin_token || stored.medusa_api_key || stored["hmt-token"]);
                 if (token) {
-                    headers["Authorization"] = token.startsWith("Bearer ") ? token : "Bearer " + token;
-                    headers["x-medusa-access-token"] = token;
-                }
-                if (stored && stored.publishable_api_key) {
-                    headers["x-publishable-api-key"] = stored.publishable_api_key;
+                    adminHeaders["Authorization"] = token.startsWith("Bearer ") ? token : "Bearer " + token;
+                    adminHeaders["x-medusa-access-token"] = token;
                 }
 
                 var defaultMetadata = {
                     salesChannels: [{ id: "sc_default", name: "Default Sales Channel" }],
                     shippingProfiles: [{ id: "sp_default", name: "Default Shipping Profile" }],
-                    categories: [{ id: "cat_apparel", name: "Apparel" }, { id: "cat_shirts", name: "Custom Shirts" }],
-                    collections: [{ id: "col_valentines", name: "Valentine's Day" }, { id: "col_featured", name: "Featured Products" }],
+                    categories: [],
+                    collections: [],
+                    tags: [],
                     productTypes: [{ id: "pt_shirt", value: "Shirt" }, { id: "pt_hoodie", value: "Hoodie" }, { id: "pt_sweatshirt", value: "Sweatshirt" }]
                 };
 
                 Promise.allSettled([
-                    fetch(backendUrl + "/admin/sales-channels", { headers: headers }).then(function(r) { return r.json(); }),
-                    fetch(backendUrl + "/admin/shipping-profiles", { headers: headers }).then(function(r) { return r.json(); }),
-                    fetch(backendUrl + "/admin/product-categories", { headers: headers }).then(function(r) { return r.json(); }),
-                    fetch(backendUrl + "/admin/collections", { headers: headers }).then(function(r) { return r.json(); })
+                    fetch(backendUrl + "/store/product-categories?limit=100", { headers: storeHeaders }).then(function(r) { return r.json(); }),
+                    fetch(backendUrl + "/store/collections?limit=100", { headers: storeHeaders }).then(function(r) { return r.json(); }),
+                    fetch(backendUrl + "/store/trending-searches", { headers: storeHeaders }).then(function(r) { return r.json(); }),
+                    fetch(backendUrl + "/admin/sales-channels", { headers: adminHeaders }).then(function(r) { return r.json(); }),
+                    fetch(backendUrl + "/admin/shipping-profiles", { headers: adminHeaders }).then(function(r) { return r.json(); })
                 ]).then(function(results) {
-                    var sc = (results[0].status === "fulfilled" && results[0].value && results[0].value.sales_channels) || [];
-                    var sp = (results[1].status === "fulfilled" && results[1].value && results[1].value.shipping_profiles) || [];
-                    var cat = (results[2].status === "fulfilled" && results[2].value && results[2].value.product_categories) || [];
-                    var col = (results[3].status === "fulfilled" && results[3].value && results[3].value.collections) || [];
+                    var catsData = (results[0].status === "fulfilled" && results[0].value && results[0].value.product_categories) || [];
+                    var colsData = (results[1].status === "fulfilled" && results[1].value && results[1].value.collections) || [];
+                    var trendData = (results[2].status === "fulfilled" && results[2].value && results[2].value.trending_searches) || [];
+                    var scData = (results[3].status === "fulfilled" && results[3].value && results[3].value.sales_channels) || [];
+                    var spData = (results[4].status === "fulfilled" && results[4].value && results[4].value.shipping_profiles) || [];
+
+                    var categories = catsData.map(function(c) {
+                        return { id: c.id, name: c.name || c.title || c.handle, handle: c.handle };
+                    });
+
+                    var collections = colsData.map(function(c) {
+                        return { id: c.id, name: c.title || c.name || c.handle, title: c.title || c.name, handle: c.handle };
+                    });
+
+                    // Build comprehensive Inkvibe tags list
+                    var tagsSet = new Set();
+                    trendData.forEach(function(t) {
+                        if (t && t.term) tagsSet.add(t.term.trim());
+                    });
+                    categories.forEach(function(c) {
+                        if (c && c.name) tagsSet.add(c.name.trim());
+                    });
+                    collections.forEach(function(col) {
+                        if (col && col.title) tagsSet.add(col.title.trim());
+                    });
+
+                    var tags = Array.from(tagsSet).filter(Boolean);
 
                     resolve({
                         success: true,
                         data: {
-                            salesChannels: sc.length ? sc : defaultMetadata.salesChannels,
-                            shippingProfiles: sp.length ? sp : defaultMetadata.shippingProfiles,
-                            categories: cat.length ? cat : defaultMetadata.categories,
-                            collections: col.length ? col : defaultMetadata.collections,
+                            categories: categories.length ? categories : defaultMetadata.categories,
+                            collections: collections.length ? collections : defaultMetadata.collections,
+                            tags: tags,
+                            salesChannels: scData.length ? scData : defaultMetadata.salesChannels,
+                            shippingProfiles: spData.length ? spData : defaultMetadata.shippingProfiles,
                             productTypes: defaultMetadata.productTypes,
-                            isLive: results.some(function(r) { return r.status === "fulfilled" && !r.value.message; })
+                            isLive: catsData.length > 0 || colsData.length > 0
                         }
                     });
                 }).catch(function() {
