@@ -762,40 +762,98 @@
                         return ret;
                     };
 
-                    // Initial token detection from localStorage
-                    try {
-                        const keys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token'];
+                    // Deep token searcher (JWT regex + keys + cookies + storage)
+                    function findTokenAnywhere() {
+                        if (window.__16vibe_auth_token && window.__16vibe_auth_token.length > 20) {
+                            return window.__16vibe_auth_token;
+                        }
+                        try {
+                            const domAuth = document.documentElement.getAttribute('data-16vibe-auth');
+                            if (domAuth && domAuth.length > 20) return domAuth;
+                        } catch(e) {}
+
+                        // 1. Literal keys in localStorage & sessionStorage
+                        const keys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token', 'auth', 'user', 'session'];
                         for (const k of keys) {
-                            const val = localStorage.getItem(k) || sessionStorage.getItem(k);
-                            if (val && typeof val === 'string' && val.length > 15) {
-                                const tok = val.startsWith('Bearer ') ? val : 'Bearer ' + val;
-                                window.__16vibe_auth_token = tok;
-                                document.documentElement.setAttribute('data-16vibe-auth', tok);
-                                break;
+                            try {
+                                const v = localStorage.getItem(k) || sessionStorage.getItem(k);
+                                if (v) {
+                                    if (typeof v === 'string' && v.length > 20 && !v.startsWith('{')) {
+                                        return v.startsWith('Bearer ') ? v : 'Bearer ' + v;
+                                    }
+                                    if (v.startsWith('{')) {
+                                        const parsed = JSON.parse(v);
+                                        const t = parsed.token || parsed.accessToken || parsed.access_token || parsed.jwt || (parsed.user && parsed.user.token) || (parsed.data && parsed.data.token);
+                                        if (t && typeof t === 'string' && t.length > 15) {
+                                            return t.startsWith('Bearer ') ? t : 'Bearer ' + t;
+                                        }
+                                    }
+                                }
+                            } catch(e) {}
+                        }
+
+                        // 2. Scan ALL localStorage items for JWT token (contains eyJ...)
+                        try {
+                            for (let i = 0; i < localStorage.length; i++) {
+                                const k = localStorage.key(i);
+                                const val = localStorage.getItem(k);
+                                if (val && typeof val === 'string' && val.includes('eyJ')) {
+                                    const match = val.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
+                                    if (match) return 'Bearer ' + match[0];
+                                }
                             }
+                        } catch(e) {}
+
+                        // 3. Scan document.cookie for JWT token
+                        try {
+                            const cookies = document.cookie.split(';');
+                            for (const c of cookies) {
+                                const trimmed = c.trim();
+                                if (trimmed.includes('eyJ')) {
+                                    const match = trimmed.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
+                                    if (match) return 'Bearer ' + match[0];
+                                }
+                            }
+                        } catch(e) {}
+
+                        return '';
+                    }
+
+                    // Initial sync of token
+                    try {
+                        const initTok = findTokenAnywhere();
+                        if (initTok) {
+                            window.__16vibe_auth_token = initTok;
+                            document.documentElement.setAttribute('data-16vibe-auth', initTok);
                         }
                     } catch(e) {}
 
                     // Listen for personalization config requests from extension
                     window.addEventListener('16vibe-fetch-personalization', async function() {
                         try {
-                            let auth = window.__16vibe_auth_token || document.documentElement.getAttribute('data-16vibe-auth') || '';
+                            let auth = findTokenAnywhere();
                             const headers = { 'Accept': 'application/json' };
                             if (auth) {
                                 headers['Authorization'] = auth.startsWith('Bearer ') ? auth : 'Bearer ' + auth;
                             }
+                            console.log('[16vibe in-page] Calling /api/product-personalization-configs with auth:', auth ? (auth.slice(0, 25) + '...') : 'none');
                             const res = await originalFetch('/api/product-personalization-configs?status=active&limit=100', {
                                 method: 'GET',
                                 headers: headers,
                                 credentials: 'include'
                             });
+                            console.log('[16vibe in-page] Personalization response status:', res.status);
                             if (res.ok) {
                                 const data = await res.json();
+                                console.log('[16vibe in-page] Personalization data received:', data);
                                 window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: true, data: data } }));
                             } else {
-                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, status: res.status } }));
+                                const errTxt = await res.text().catch(function() { return ''; });
+                                console.warn('[16vibe in-page] Personalization HTTP error:', res.status, errTxt);
+                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, status: res.status, error: errTxt } }));
                             }
                         } catch(err) {
+                            console.error('[16vibe in-page] Personalization fetch failed:', err);
                             window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, error: err.message } }));
                         }
                     });

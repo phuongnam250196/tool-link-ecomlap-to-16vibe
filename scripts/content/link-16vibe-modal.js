@@ -4,8 +4,8 @@
  * Handles:
  * 1. Listening for '16vibe-open-link-modal' event and capture-phase click on "Link 16vibe"
  * 2. Auto-injecting modal styles to guarantee UI visibility
- * 3. Fetching personalization configs from https://ecomlap.com/api/product-personalization-configs?status=active&limit=100
- *    via Main World authenticated bridge + DOM attribute token
+ * 3. Fetching all active personalization configs from https://ecomlap.com/api/product-personalization-configs?status=active&limit=100
+ *    via Main World authenticated bridge + deep JWT token search
  * 4. Fetching store metadata (all 11 categories, 39 collections, trending tags) from Inkvibe (localhost:9000)
  * 5. Interactive Inkvibe Tags suggestion badges for quick appending
  * 6. Dynamic placeholder insertion ({{item_name}}, {{item_sku}}, etc.)
@@ -36,7 +36,7 @@
     }
 
     /**
-     * Get Authentication Headers
+     * Deep search for authentication token
      */
     function getAuthHeaders() {
         const headers = { 'Accept': 'application/json' };
@@ -44,30 +44,72 @@
         // 1. From DOM attribute set by in-page network hook
         try {
             const domAuth = document.documentElement.getAttribute('data-16vibe-auth');
-            if (domAuth && domAuth.length > 10) {
+            if (domAuth && domAuth.length > 20) {
                 headers['Authorization'] = domAuth.startsWith('Bearer ') ? domAuth : 'Bearer ' + domAuth;
                 return headers;
             }
         } catch(e) {}
 
         // 2. From window variable if accessible
-        if (typeof window !== 'undefined' && window.__16vibe_auth_token) {
+        if (typeof window !== 'undefined' && window.__16vibe_auth_token && window.__16vibe_auth_token.length > 20) {
             const token = window.__16vibe_auth_token;
             headers['Authorization'] = token.startsWith('Bearer ') ? token : 'Bearer ' + token;
             return headers;
         }
 
-        // 3. From storage
+        // 3. Scan localStorage & sessionStorage literal keys
         try {
-            const tokenKeys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token'];
+            const tokenKeys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token', 'auth', 'user', 'session'];
             for (const k of tokenKeys) {
                 const val = localStorage.getItem(k) || sessionStorage.getItem(k);
-                if (val && typeof val === 'string' && val.length > 15) {
-                    headers['Authorization'] = val.startsWith('Bearer ') ? val : 'Bearer ' + val;
-                    return headers;
+                if (val) {
+                    if (typeof val === 'string' && val.length > 20 && !val.startsWith('{')) {
+                        headers['Authorization'] = val.startsWith('Bearer ') ? val : 'Bearer ' + val;
+                        return headers;
+                    }
+                    if (val.startsWith('{')) {
+                        try {
+                            const parsed = JSON.parse(val);
+                            const t = parsed.token || parsed.accessToken || parsed.access_token || parsed.jwt || (parsed.user && parsed.user.token) || (parsed.data && parsed.data.token);
+                            if (t && typeof t === 'string' && t.length > 15) {
+                                headers['Authorization'] = t.startsWith('Bearer ') ? t : 'Bearer ' + t;
+                                return headers;
+                            }
+                        } catch(e) {}
+                    }
                 }
             }
         } catch (e) {}
+
+        // 4. Scan ALL localStorage for JWT token (contains eyJ...)
+        try {
+            for (let i = 0; i < localStorage.length; i++) {
+                const k = localStorage.key(i);
+                const val = localStorage.getItem(k);
+                if (val && typeof val === 'string' && val.includes('eyJ')) {
+                    const match = val.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
+                    if (match) {
+                        headers['Authorization'] = 'Bearer ' + match[0];
+                        return headers;
+                    }
+                }
+            }
+        } catch(e) {}
+
+        // 5. Scan document.cookie for JWT token
+        try {
+            const cookies = document.cookie.split(';');
+            for (const c of cookies) {
+                const trimmed = c.trim();
+                if (trimmed.includes('eyJ')) {
+                    const match = trimmed.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
+                    if (match) {
+                        headers['Authorization'] = 'Bearer ' + match[0];
+                        return headers;
+                    }
+                }
+            }
+        } catch(e) {}
 
         return headers;
     }
@@ -96,88 +138,106 @@
     function extractPersonalizationList(data) {
         if (!data) return [];
         let rawList = [];
-        if (Array.isArray(data)) rawList = data;
-        else if (Array.isArray(data.data)) rawList = data.data;
-        else if (Array.isArray(data.docs)) rawList = data.docs;
-        else if (Array.isArray(data.items)) rawList = data.items;
-        else if (Array.isArray(data.configs)) rawList = data.configs;
-        else if (Array.isArray(data.personalization_configs)) rawList = data.personalization_configs;
-        else if (data.data && Array.isArray(data.data.items)) rawList = data.data.items;
 
-        return rawList.map(item => ({
-            id: item._id || item.id || item.code || item.config_id || 'cfg',
-            name: item.name || item.title || item.config_name || item.label || item.code || ('Cấu hình #' + (item.id || item._id))
-        })).filter(item => item.id && item.name);
+        if (Array.isArray(data)) {
+            rawList = data;
+        } else if (data && typeof data === 'object') {
+            if (Array.isArray(data.data)) rawList = data.data;
+            else if (Array.isArray(data.items)) rawList = data.items;
+            else if (Array.isArray(data.docs)) rawList = data.docs;
+            else if (Array.isArray(data.configs)) rawList = data.configs;
+            else if (Array.isArray(data.personalizations)) rawList = data.personalizations;
+            else if (Array.isArray(data.personalization_configs)) rawList = data.personalization_configs;
+            else if (data.data && typeof data.data === 'object') {
+                if (Array.isArray(data.data.items)) rawList = data.data.items;
+                else if (Array.isArray(data.data.docs)) rawList = data.data.docs;
+                else if (Array.isArray(data.data.configs)) rawList = data.data.configs;
+                else if (Array.isArray(data.data.data)) rawList = data.data.data;
+            }
+        }
+
+        console.log('[16vibe] Raw Ecomlap Personalization extracted list (count: ' + rawList.length + '):', rawList);
+
+        const list = rawList.map((item, idx) => {
+            const id = item._id || item.id || item.code || item.config_id || ('cfg_' + (idx + 1));
+            const name = item.name || item.title || item.config_name || item.configName || item.label || item.code || item.template_name || ('Cấu hình #' + (idx + 1));
+            return {
+                id: String(id),
+                name: String(name),
+                status: item.status,
+                raw: item
+            };
+        }).filter(item => item.id && item.name);
+
+        console.log('[16vibe] Processed personalization items for dropdown (count: ' + list.length + '):', list);
+        return list;
     }
 
     /**
      * Fetch personalization configs from ecomlap.com
-     * Uses in-page Main World bridge for 100% native authenticated session
+     * Dual strategy: in-page Main World bridge + direct fetch with full token discovery
      */
     function fetchPersonalizationConfigs() {
         return new Promise(async (resolve) => {
             let resolved = false;
 
-            // Bridge listener for response from in-page hook
             const responseHandler = (e) => {
                 if (resolved) return;
-                window.removeEventListener('16vibe-personalization-response', responseHandler);
                 const detail = e.detail;
                 if (detail && detail.success && detail.data) {
                     const list = extractPersonalizationList(detail.data);
                     if (list.length > 0) {
-                        console.log('[16vibe] Lấy thành công ' + list.length + ' cấu hình cá nhân hóa từ Ecomlap qua in-page bridge:', list);
                         resolved = true;
+                        window.removeEventListener('16vibe-personalization-response', responseHandler);
+                        console.log('[16vibe] Nhận thành công ' + list.length + ' cấu hình cá nhân hóa thật từ In-Page Bridge:', list);
                         return resolve(list);
                     }
                 }
             };
             window.addEventListener('16vibe-personalization-response', responseHandler);
 
-            // Trigger in-page fetch
+            // 1. Trigger in-page fetch
             try {
                 window.dispatchEvent(new CustomEvent('16vibe-fetch-personalization'));
             } catch(e) {}
 
-            // Concurrent direct fetch from content script
+            // 2. Direct fetch from content script
             const targetUrl = window.location.origin.includes('ecomlap.com')
                 ? '/api/product-personalization-configs?status=active&limit=100'
                 : 'https://ecomlap.com/api/product-personalization-configs?status=active&limit=100';
 
             try {
                 const headers = getAuthHeaders();
+                console.log('[16vibe] Content Script direct fetch to ' + targetUrl + ' with headers:', headers);
                 const res = await fetch(targetUrl, {
                     method: 'GET',
                     headers: headers,
                     credentials: 'include'
                 });
+                console.log('[16vibe] Content Script direct fetch status:', res.status);
                 if (res.ok) {
                     const json = await res.json();
                     const list = extractPersonalizationList(json);
                     if (list.length > 0 && !resolved) {
                         resolved = true;
                         window.removeEventListener('16vibe-personalization-response', responseHandler);
-                        console.log('[16vibe] Lấy thành công ' + list.length + ' cấu hình cá nhân hóa từ API:', list);
+                        console.log('[16vibe] Nhận thành công ' + list.length + ' cấu hình cá nhân hóa thật từ Direct Fetch:', list);
                         return resolve(list);
                     }
                 }
             } catch (e) {
-                console.warn('[16vibe] Direct fetch personalization error:', e);
+                console.warn('[16vibe] Direct fetch error:', e);
             }
 
-            // Timeout fallback
+            // 3. Timeout handler (8 seconds) - never return fake 4 mock items
             setTimeout(() => {
                 if (!resolved) {
                     resolved = true;
                     window.removeEventListener('16vibe-personalization-response', responseHandler);
-                    resolve([
-                        { id: 'cfg_default', name: 'Cấu hình cá nhân hóa mặc định (Default)' },
-                        { id: 'cfg_apparel_tshirt', name: 'Áo thun 2D / 3D Print - Personalization' },
-                        { id: 'cfg_mug_custom', name: 'Cốc sứ in tên & hình ảnh cá nhân hóa' },
-                        { id: 'cfg_canvas_art', name: 'Canvas & Poster Custom Names' }
-                    ]);
+                    console.warn('[16vibe] Không thể tải cấu hình cá nhân hóa sau 8s.');
+                    resolve([]);
                 }
-            }, 1200);
+            }, 8000);
         });
     }
 
@@ -253,11 +313,11 @@
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-personalization">
                                     <span>Cấu hình cá nhân hóa</span>
-                                    <span class="vibe-form-label-hint">https://ecomlap.com/api/...</span>
+                                    <span class="vibe-form-label-hint" id="vibe-hint-personalization-count">https://ecomlap.com/api/...</span>
                                 </label>
                                 <div class="vibe-input-wrap-flex">
                                     <select class="vibe-select" id="vibe-select-personalization">
-                                        <option value="">-- Đang tải cấu hình cá nhân hóa... --</option>
+                                        <option value="">-- Đang nạp cấu hình cá nhân hóa từ Ecomlap... --</option>
                                     </select>
                                     <button type="button" class="vibe-btn-refresh-field" id="vibe-btn-refresh-pers" title="Làm mới danh sách cá nhân hóa">🔄</button>
                                 </div>
@@ -539,20 +599,24 @@
     }
 
     /**
-     * Populate Personalization configs dropdown
+     * Populate Personalization configs dropdown with real items
      */
     async function loadPersonalizationDropdown() {
         const select = document.getElementById('vibe-select-personalization');
+        const hint = document.getElementById('vibe-hint-personalization-count');
         if (!select) return;
 
-        select.innerHTML = '<option value="">-- Đang tải cấu hình cá nhân hóa... --</option>';
+        select.innerHTML = '<option value="">⏳ Đang nạp cấu hình cá nhân hóa từ Ecomlap...</option>';
         const list = await fetchPersonalizationConfigs();
 
         select.innerHTML = '';
         if (list.length === 0) {
-            select.innerHTML = '<option value="">(Không có cấu hình nào)</option>';
+            select.innerHTML = '<option value="">⚠️ Không tải được cấu hình - Bấm nút 🔄 để thử lại</option>';
+            if (hint) hint.textContent = '0 cấu hình (Cần tải lại)';
             return;
         }
+
+        if (hint) hint.textContent = list.length + ' cấu hình từ Ecomlap';
 
         list.forEach((item, idx) => {
             const opt = document.createElement('option');
@@ -561,6 +625,8 @@
             if (idx === 0) opt.selected = true;
             select.appendChild(opt);
         });
+
+        console.log('[16vibe] Dropdown đã nạp thành công ' + list.length + ' cấu hình cá nhân hóa thật.');
     }
 
     /**
