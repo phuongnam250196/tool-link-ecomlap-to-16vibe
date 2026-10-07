@@ -12,6 +12,10 @@
 (function () {
     'use strict';
 
+    if (typeof window !== 'undefined' && window.location && window.location.hostname && !window.location.hostname.includes('ecomlap.com')) {
+        return;
+    }
+
     // Global in-memory cache of valid product images
     const imageCache = new Map(); // id or name -> valid imageUrl
 
@@ -169,11 +173,61 @@
     }
 
     /**
+     * Accurately extract the true product name from all possible Ecomlap properties
+     */
+    function extractProductName(p, idx) {
+        if (!p) return 'Sản phẩm #' + ((idx || 0) + 1);
+        if (typeof p === 'string' && p.trim()) return p.trim();
+
+        const raw = (p && typeof p.raw === 'object' && p.raw) ? p.raw : {};
+        const candidates = [
+            p.item_name,
+            p.itemName,
+            p.product_name,
+            p.productName,
+            p.name,
+            p.title,
+            p.product_title,
+            p.productTitle,
+            raw.item_name,
+            raw.itemName,
+            raw.product_name,
+            raw.productName,
+            raw.name,
+            raw.title,
+            raw.product_title,
+            raw.productTitle,
+            p.design_name,
+            p.design_title,
+            p.prompt,
+            p.handle
+        ];
+
+        for (const c of candidates) {
+            if (typeof c === 'string' && c.trim()) {
+                const clean = c.trim();
+                // Filter out placeholder names if real names exist
+                if (!/^untitled|không tên|product$|^sản phẩm #\d+$/i.test(clean)) {
+                    return clean;
+                }
+            }
+        }
+
+        for (const c of candidates) {
+            if (typeof c === 'string' && c.trim()) {
+                return c.trim();
+            }
+        }
+
+        return 'Sản phẩm #' + ((idx || 0) + 1);
+    }
+
+    /**
      * Normalize single product into widget schema
      */
     function normalizeProduct(p, idx) {
         const id = String(p._id || p.id || p.product_id || p.sku || ('prod_' + (idx + 1)));
-        const name = p.title || p.name || p.product_name || p.productTitle || p.handle || ('Sản phẩm #' + (idx + 1));
+        const name = extractProductName(p, idx);
         
         // Priority to main_image_url
         const rawImg = p.main_image_url || p.main_image || p.mainImageUrl || p.mainImage || extractProductImage(p);
@@ -206,6 +260,9 @@
             _id: id,
             id: id,
             name: name,
+            title: name,
+            item_name: name,
+            product_name: name,
             image_url: imageUrl,
             main_image_url: imageUrl,
             tags: tags,
@@ -466,12 +523,87 @@
                 return '';
             }
 
+            function extractTitleFromRow(container) {
+                if (!container) return '';
+
+                // 1. Check explicit title and name selectors
+                const explicitSelectors = [
+                    '[data-field="item_name"]',
+                    '[data-field="product_name"]',
+                    '[data-field="name"]',
+                    '[data-field="title"]',
+                    '.item-name',
+                    '.product-name',
+                    '.item-title',
+                    '.product-title',
+                    '[class*="item-name"]',
+                    '[class*="product-name"]',
+                    '[class*="item_name"]',
+                    '[class*="product_name"]',
+                    '[class*="itemTitle"]',
+                    '[class*="productTitle"]',
+                    'a[href*="/product/"]',
+                    'a[href*="/products/"]',
+                    'a[href*="/item/"]',
+                    'a[href*="/items/"]'
+                ];
+
+                for (const sel of explicitSelectors) {
+                    const el = container.querySelector(sel);
+                    if (el) {
+                        const txt = el.textContent.trim();
+                        if (txt && txt.length > 2 && !/^(select all|chọn tất cả|hành động|action|sửa|xóa|view|edit)$/i.test(txt)) {
+                            return txt;
+                        }
+                    }
+                }
+
+                // 2. Scan all cells if table row
+                const cells = Array.from(container.querySelectorAll('td, th'));
+                if (cells.length > 0) {
+                    const candidates = [];
+                    cells.forEach((td, cIdx) => {
+                        if (td.querySelector('input[type="checkbox"]')) return;
+                        const hasImg = td.querySelector('img');
+                        const txt = td.textContent.trim();
+                        if (hasImg && txt.length < 3) return;
+
+                        if (/^(\$|₫|USD|VND)?\s*\d+([.,]\d+)?\s*(\$|₫|USD|VND)?$/i.test(txt)) return;
+                        if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(txt)) return;
+                        if (/^(active|inactive|draft|published|pending|đã dùng|chưa dùng|đã xuất bản)$/i.test(txt)) return;
+                        if (/^(edit|delete|view|sửa|xóa|xem|link|chi tiết|action)$/i.test(txt)) return;
+
+                        const link = td.querySelector('a');
+                        if (link && link.textContent.trim().length > 3) {
+                            candidates.push({ text: link.textContent.trim(), score: 50 + link.textContent.trim().length });
+                            return;
+                        }
+
+                        if (txt.length > 3) {
+                            candidates.push({ text: txt, score: txt.length });
+                        }
+                    });
+
+                    if (candidates.length > 0) {
+                        candidates.sort((a, b) => b.score - a.score);
+                        return candidates[0].text;
+                    }
+                }
+
+                // 3. Fallback for cards / grid
+                const cardTitle = container.querySelector('.title, .name, h3, h4, h5, a');
+                if (cardTitle && cardTitle.textContent.trim().length > 2) {
+                    return cardTitle.textContent.trim();
+                }
+
+                return '';
+            }
+
             // 1. Scan table rows
             const rows = document.querySelectorAll('table tbody tr');
             if (rows.length > 0) {
                 rows.forEach((row, idx) => {
-                    const titleEl = row.querySelector('a[href*="/product"], .product-title, .title, td:nth-child(2), td:nth-child(3)');
-                    const title = titleEl ? titleEl.textContent.trim() : '';
+                    const title = extractTitleFromRow(row);
                     let imgSrc = getImageSrc(row);
                     const priceEl = row.querySelector('.price, [class*="price"], td:nth-child(4), td:nth-child(5)');
                     const price = priceEl ? priceEl.textContent.trim() : '';
@@ -484,7 +616,7 @@
                         if (sku) tags.push(`SKU: ${sku}`);
                         if (tags.length === 0) tags.push('Product');
 
-                        const id = row.getAttribute('data-id') || row.getAttribute('data-product-id') || `dom_${idx + 1}`;
+                        const id = row.getAttribute('data-id') || row.getAttribute('data-product-id') || (sku ? `dom_${sku}` : `dom_${idx + 1}`);
                         
                         // Check if we have cached image for this product
                         if (!imgSrc && (imageCache.has(id) || imageCache.has(title))) {
@@ -495,6 +627,9 @@
                             _id: id,
                             id: id,
                             name: title,
+                            title: title,
+                            item_name: title,
+                            product_name: title,
                             image_url: imgSrc,
                             main_image_url: imgSrc,
                             tags: tags,
@@ -512,8 +647,7 @@
             if (products.length === 0) {
                 const cards = document.querySelectorAll('.product-card, .product-item, [data-product], [data-product-id]');
                 cards.forEach((card, idx) => {
-                    const titleEl = card.querySelector('.title, .product-title, h3, h4, h5, a');
-                    const title = titleEl ? titleEl.textContent.trim() : '';
+                    const title = extractTitleFromRow(card);
                     let imgSrc = getImageSrc(card);
                     const priceEl = card.querySelector('.price, [class*="price"]');
                     const price = priceEl ? priceEl.textContent.trim() : '';
@@ -532,6 +666,9 @@
                             _id: id,
                             id: id,
                             name: title,
+                            title: title,
+                            item_name: title,
+                            product_name: title,
                             image_url: imgSrc,
                             main_image_url: imgSrc,
                             tags: tags,
@@ -828,8 +965,8 @@
                         }
                     } catch(e) {}
 
-                    // Listen for personalization config requests from extension
-                    window.addEventListener('16vibe-fetch-personalization', async function() {
+                    // Listen for personalization config requests from extension (supports both CustomEvent and postMessage)
+                    async function handleFetchPersonalization(requestId) {
                         try {
                             let auth = findTokenAnywhere();
                             const headers = { 'Accept': 'application/json' };
@@ -846,15 +983,37 @@
                             if (res.ok) {
                                 const data = await res.json();
                                 console.log('[16vibe in-page] Personalization data received:', data);
-                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: true, data: data } }));
+                                const items = Array.isArray(data) ? data : (data.docs || data.data || data.configs || data.items || []);
+                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: true, data: data, items: items } }));
+                                if (requestId) {
+                                    window.postMessage({ type: '16VIBE_PERSONALIZATION_CONFIGS_RES', requestId: requestId, success: true, items: items, data: data }, '*');
+                                }
                             } else {
                                 const errTxt = await res.text().catch(function() { return ''; });
                                 console.warn('[16vibe in-page] Personalization HTTP error:', res.status, errTxt);
                                 window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, status: res.status, error: errTxt } }));
+                                if (requestId) {
+                                    window.postMessage({ type: '16VIBE_PERSONALIZATION_CONFIGS_RES', requestId: requestId, success: false, error: errTxt }, '*');
+                                }
                             }
                         } catch(err) {
                             console.error('[16vibe in-page] Personalization fetch failed:', err);
                             window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, error: err.message } }));
+                            if (requestId) {
+                                window.postMessage({ type: '16VIBE_PERSONALIZATION_CONFIGS_RES', requestId: requestId, success: false, error: err.message }, '*');
+                            }
+                        }
+                    }
+
+                    window.addEventListener('16vibe-fetch-personalization', function(e) {
+                        const reqId = e.detail && e.detail.requestId;
+                        handleFetchPersonalization(reqId);
+                    });
+
+                    window.addEventListener('message', function(event) {
+                        if (event.source !== window || !event.data) return;
+                        if (event.data.type === '16VIBE_FETCH_PERSONALIZATION_CONFIGS_REQ') {
+                            handleFetchPersonalization(event.data.requestId);
                         }
                     });
                 })();
@@ -909,7 +1068,11 @@
         }, 1200);
 
         // Also check if we have stored products to initialize store
-        chrome.storage.local.get(['ecomlap_products'], (res) => {
+        chrome.storage.local.get(['ecomlap_products', 'linked_products_map'], (res) => {
+            if (res && res.linked_products_map) {
+                cachedLinkedMap = res.linked_products_map;
+                renderLinkedBadgesAcrossPage(cachedLinkedMap);
+            }
             if (res && Array.isArray(res.ecomlap_products) && res.ecomlap_products.length > 0) {
                 // Populate imageCache from stored items
                 res.ecomlap_products.forEach(p => {
@@ -932,7 +1095,137 @@
                 });
                 return true;
             }
+            if (msg.action === '16vibe_products_linked_updated') {
+                if (msg.data && msg.data.linkedMap) {
+                    cachedLinkedMap = msg.data.linkedMap;
+                    renderLinkedBadgesAcrossPage(cachedLinkedMap);
+                }
+            }
         });
+
+        // Listen for local custom events when products linked
+        window.addEventListener('16vibe-products-linked-local', (e) => {
+            if (e.detail && e.detail.linkedMap) {
+                cachedLinkedMap = e.detail.linkedMap;
+                renderLinkedBadgesAcrossPage(cachedLinkedMap);
+            }
+        });
+
+        // Set up mutation observer to maintain badges during dynamic SPA render
+        setupBadgeMutationObserver();
+    }
+
+    let cachedLinkedMap = {};
+    let badgeObserver = null;
+    let badgeDebounceTimer = null;
+
+    function isItemLinked(id, title, imgUrl, map) {
+        if (!map || typeof map !== 'object') return false;
+        if (id && map[String(id)]) return true;
+        if (imgUrl && map[String(imgUrl)]) return true;
+        if (title && map['name:' + String(title).toLowerCase().trim()]) return true;
+        return false;
+    }
+
+    function createBadgeElement(titleText) {
+        const badge = document.createElement('div');
+        badge.className = 'vibe-linked-badge';
+        badge.title = titleText || 'Đã liên kết với Inkvibe';
+        badge.setAttribute('data-vibe-badge', 'true');
+        badge.innerHTML = `
+            <svg viewBox="0 0 24 24">
+                <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+        `;
+        return badge;
+    }
+
+    function renderLinkedBadgesAcrossPage(linkedMap) {
+        if (!linkedMap || Object.keys(linkedMap).length === 0) return;
+
+        try {
+            // 1. Table rows on Ecomlap (e.g. table tbody tr)
+            const rows = document.querySelectorAll('table tbody tr');
+            rows.forEach((row, idx) => {
+                const title = extractTitleFromRow(row);
+                const id = row.getAttribute('data-id') || row.getAttribute('data-product-id') || '';
+                const img = row.querySelector('img');
+                const imgSrc = img?.currentSrc || img?.src || '';
+
+                if (isItemLinked(id, title, imgSrc, linkedMap)) {
+                    const imgCell = (img && img.closest('td')) || (img && img.parentElement) || row.querySelector('td:nth-child(2), td:first-child');
+                    if (imgCell) {
+                        const targetWrapper = img?.parentElement || imgCell;
+                        if (!targetWrapper.querySelector('.vibe-linked-badge')) {
+                            const cs = window.getComputedStyle(targetWrapper);
+                            if (cs.position === 'static') {
+                                targetWrapper.style.position = 'relative';
+                            }
+                            targetWrapper.appendChild(createBadgeElement(`Đã liên kết với Inkvibe: ${title || 'Sản phẩm'}`));
+                        }
+                    }
+                }
+            });
+
+            // 2. Product cards / grid items on Ecomlap
+            const cards = document.querySelectorAll('.product-card, .product-item, [data-product], [data-product-id], .card, .ant-card');
+            cards.forEach((card) => {
+                const title = extractTitleFromRow(card);
+                const id = card.getAttribute('data-product-id') || card.getAttribute('data-id') || '';
+                const img = card.querySelector('img');
+                const imgSrc = img?.currentSrc || img?.src || '';
+
+                if (isItemLinked(id, title, imgSrc, linkedMap)) {
+                    const thumbWrapper = (img && img.closest('.image, .thumb, .product-thumb, .cover, .ant-card-cover')) || (img && img.parentElement) || card;
+                    if (thumbWrapper && !thumbWrapper.querySelector('.vibe-linked-badge')) {
+                        const cs = window.getComputedStyle(thumbWrapper);
+                        if (cs.position === 'static') {
+                            thumbWrapper.style.position = 'relative';
+                        }
+                        thumbWrapper.appendChild(createBadgeElement(`Đã liên kết với Inkvibe: ${title || 'Sản phẩm'}`));
+                    }
+                }
+            });
+
+            // 3. Extension In-Page Gallery/Table items (#ecomlap-manager-panel)
+            const galleryCards = document.querySelectorAll('#ecomlap-manager-panel .idea-card, #ecomlap-manager-panel .table-row');
+            galleryCards.forEach((item) => {
+                const title = item.querySelector('.idea-name')?.textContent || item.querySelector('.idea-title')?.textContent || '';
+                const img = item.querySelector('img');
+                const imgSrc = img?.currentSrc || img?.src || '';
+                const id = item.dataset?.id || '';
+
+                if (isItemLinked(id, title, imgSrc, linkedMap)) {
+                    const thumb = item.querySelector('.idea-thumb, .td-image') || item;
+                    if (thumb && !thumb.querySelector('.vibe-linked-badge')) {
+                        const cs = window.getComputedStyle(thumb);
+                        if (cs.position === 'static') {
+                            thumb.style.position = 'relative';
+                        }
+                        thumb.appendChild(createBadgeElement(`Đã liên kết với Inkvibe`));
+                    }
+                }
+            });
+        } catch (e) {
+            console.warn('[16vibe] Error rendering linked badges:', e);
+        }
+    }
+
+    function setupBadgeMutationObserver() {
+        if (badgeObserver) return;
+        badgeObserver = new MutationObserver(() => {
+            if (badgeDebounceTimer) clearTimeout(badgeDebounceTimer);
+            badgeDebounceTimer = setTimeout(() => {
+                if (cachedLinkedMap && Object.keys(cachedLinkedMap).length > 0) {
+                    renderLinkedBadgesAcrossPage(cachedLinkedMap);
+                }
+            }, 300);
+        });
+
+        const target = document.body || document.documentElement;
+        if (target) {
+            badgeObserver.observe(target, { childList: true, subtree: true });
+        }
     }
 
     // Run network hook injection immediately at document_start

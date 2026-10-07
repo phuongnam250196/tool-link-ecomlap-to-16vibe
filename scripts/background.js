@@ -23,7 +23,12 @@ case "getInkvibeMetadata":
                     categories: [],
                     collections: [],
                     tags: [],
-                    productTypes: [{ id: "pt_shirt", value: "Shirt" }, { id: "pt_hoodie", value: "Hoodie" }, { id: "pt_sweatshirt", value: "Sweatshirt" }]
+                    productTypes: [{ id: "pt_shirt", value: "Shirt" }, { id: "pt_hoodie", value: "Hoodie" }, { id: "pt_sweatshirt", value: "Sweatshirt" }],
+                    vendors: [
+                        { id: "admin", name: "Admin", handle: "admin" },
+                        { id: "01M1C02AVPFY4GQBKZKNH4KVE2", name: "InkVibe Studio", handle: "inkvibe-studio" },
+                        { id: "01M1C02B3J6NWS1J39JVDV1AEV", name: "Urban Apparel", handle: "urban-apparel" }
+                    ]
                 };
 
                 Promise.allSettled([
@@ -31,13 +36,15 @@ case "getInkvibeMetadata":
                     fetch(backendUrl + "/store/collections?limit=100", { headers: storeHeaders }).then(function(r) { return r.json(); }),
                     fetch(backendUrl + "/store/trending-searches", { headers: storeHeaders }).then(function(r) { return r.json(); }),
                     fetch(backendUrl + "/admin/sales-channels", { headers: adminHeaders }).then(function(r) { return r.json(); }),
-                    fetch(backendUrl + "/admin/shipping-profiles", { headers: adminHeaders }).then(function(r) { return r.json(); })
+                    fetch(backendUrl + "/admin/shipping-profiles", { headers: adminHeaders }).then(function(r) { return r.json(); }),
+                    fetch(backendUrl + "/store/vendors", { headers: storeHeaders }).then(function(r) { return r.json(); })
                 ]).then(function(results) {
                     var catsData = (results[0].status === "fulfilled" && results[0].value && results[0].value.product_categories) || [];
                     var colsData = (results[1].status === "fulfilled" && results[1].value && results[1].value.collections) || [];
                     var trendData = (results[2].status === "fulfilled" && results[2].value && results[2].value.trending_searches) || [];
                     var scData = (results[3].status === "fulfilled" && results[3].value && results[3].value.sales_channels) || [];
                     var spData = (results[4].status === "fulfilled" && results[4].value && results[4].value.shipping_profiles) || [];
+                    var vData = (results[5].status === "fulfilled" && results[5].value && results[5].value.vendors) || [];
 
                     var categories = catsData.map(function(c) {
                         return {
@@ -51,6 +58,10 @@ case "getInkvibeMetadata":
 
                     var collections = colsData.map(function(c) {
                         return { id: c.id, name: c.title || c.name || c.handle, title: c.title || c.name, handle: c.handle };
+                    });
+
+                    var vendors = vData.map(function(v) {
+                        return { id: v.id, name: v.name, handle: v.handle };
                     });
 
                     // Build comprehensive Inkvibe tags list
@@ -75,8 +86,9 @@ case "getInkvibeMetadata":
                             tags: tags,
                             salesChannels: scData.length ? scData : defaultMetadata.salesChannels,
                             shippingProfiles: spData.length ? spData : defaultMetadata.shippingProfiles,
+                            vendors: vendors.length ? vendors : defaultMetadata.vendors,
                             productTypes: defaultMetadata.productTypes,
-                            isLive: catsData.length > 0 || colsData.length > 0
+                            isLive: catsData.length > 0 || colsData.length > 0 || vData.length > 0
                         }
                     });
                 }).catch(function() {
@@ -89,10 +101,12 @@ case "getInkvibeMetadata":
 case "linkProductsToInkvibe":
     return (function(reqData) {
         return new Promise(function(resolve) {
-            chrome.storage.local.get(["medusa_api_key", "admin_token", "hmt-token", "linked_products"], function(stored) {
+            chrome.storage.local.get(["admin_token", "medusa_api_key", "sync_secret_key", "linked_products"], function(stored) {
                 var backendUrl = (reqData && reqData.serverUrl) || "http://localhost:9000";
                 var products = (reqData && reqData.products) || [];
                 var config = (reqData && reqData.config) || {};
+                var token = (stored && (stored.admin_token || stored.medusa_api_key)) || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJhY3Rvcl9pZCI6InVzZXJfMDFNMUJaWTM0S0JTQTk3V1BERjVKUVdKRkoiLCJhY3Rvcl90eXBlIjoidXNlciIsImF1dGhfaWRlbnRpdHlfaWQiOiJhdXRoaWRfMDFNMUJaWTNOSjAyQTcwUjFIQk1GVkYwUUUiLCJhcHBfbWV0YWRhdGEiOnsidXNlcl9pZCI6InVzZXJfMDFNMUJaWTM0S0JTQTk3V1BERjVKUVdKRkoifSwiaWF0IjoxNzkwODQwMTU4LCJleHAiOjIxMDY0MTYxNTh9.HXWgmIgM0a-mYamW2SV_qJjUCLN-qKZtGt7BdC3mPL4";
+                var secretKey = (stored && stored.sync_secret_key) || "inkvibe_sync_secret_2026";
 
                 // Save to local extension history
                 var history = (stored && Array.isArray(stored.linked_products)) ? stored.linked_products : [];
@@ -107,23 +121,108 @@ case "linkProductsToInkvibe":
                 if (history.length > 50) history.length = 50;
                 chrome.storage.local.set({ linked_products: history });
 
-                var headers = { "Content-Type": "application/json" };
-                var token = stored && (stored.admin_token || stored.medusa_api_key || stored["hmt-token"]);
-                if (token) {
-                    headers["Authorization"] = token.startsWith("Bearer ") ? token : "Bearer " + token;
-                }
+                var headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": token.startsWith("Bearer ") ? token : ("Bearer " + token),
+                    "x-16vibe-secret-key": secretKey
+                };
 
-                fetch(backendUrl + "/admin/products/batch", {
+                // Call ONLY /admin/products/link-16vibe
+                fetch(backendUrl + "/admin/products/link-16vibe", {
                     method: "POST",
                     headers: headers,
                     body: JSON.stringify({ products: products, config: config })
                 }).then(function(res) {
-                    if (res.ok) return res.json();
-                    return { success: true, status: res.status, savedLocally: true };
-                }).then(function(data) {
-                    resolve({ success: true, count: products.length, data: data });
+                    return res.json().then(function(data) {
+                        return { ok: res.ok, status: res.status, data: data };
+                    }).catch(function() {
+                        return { ok: res.ok, status: res.status, data: null };
+                    });
+                }).then(function(result) {
+                    if (result.ok && result.data && result.data.success) {
+                        // Update linked history and linked_products_map
+                        chrome.storage.local.get(["linked_products", "linked_products_map"], function(st) {
+                            var history = (st && Array.isArray(st.linked_products)) ? st.linked_products : [];
+                            var linkedMap = (st && st.linked_products_map && typeof st.linked_products_map === "object") ? st.linked_products_map : {};
+                            var nowIso = new Date().toISOString();
+
+                            var record = {
+                                id: "link_" + Date.now(),
+                                timestamp: nowIso,
+                                productCount: products.length,
+                                config: config,
+                                products: products
+                            };
+                            history.unshift(record);
+                            if (history.length > 50) history.length = 50;
+
+                            products.forEach(function(p, idx) {
+                                var pid = String(p._id || p.id || p.sku || ("item_" + idx));
+                                var pRaw = p.raw || p;
+                                var pImg = pRaw.main_image_url || pRaw.main_image || p.main_image_url || p.image_url || "";
+                                var pName = p.item_name || p.product_name || p.name || p.title || "";
+                                
+                                var itemEntry = {
+                                    id: pid,
+                                    name: pName,
+                                    image_url: pImg,
+                                    linked_at: nowIso,
+                                    status: "linked"
+                                };
+
+                                if (pid) linkedMap[pid] = itemEntry;
+                                if (pImg) linkedMap[pImg] = itemEntry;
+                                if (pName) linkedMap["name:" + pName.toLowerCase().trim()] = itemEntry;
+                            });
+
+                            chrome.storage.local.set({
+                                linked_products: history,
+                                linked_products_map: linkedMap
+                            }, function() {
+                                // Broadcast update to all active tabs
+                                try {
+                                    chrome.tabs.query({}, function(tabs) {
+                                        if (tabs && tabs.length) {
+                                            tabs.forEach(function(tab) {
+                                                if (tab.id) {
+                                                    chrome.tabs.sendMessage(tab.id, {
+                                                        action: "16vibe_products_linked_updated",
+                                                        data: { linkedMap: linkedMap }
+                                                    }).catch(function() {});
+                                                }
+                                            });
+                                        }
+                                    });
+                                } catch(e) {}
+                            });
+                        });
+
+                        resolve({
+                            success: true,
+                            count: result.data.count || products.length,
+                            created_count: result.data.created_count || 0,
+                            updated_count: result.data.updated_count || 0,
+                            message: result.data.message || ("Đã liên kết " + products.length + " sản phẩm thành công vào Inkvibe Admin!"),
+                            data: result.data
+                        });
+                    } else {
+                        var errMsg = (result.data && (result.data.error || result.data.message)) || ("HTTP " + result.status);
+                        resolve({
+                            success: false,
+                            count: products.length,
+                            error: errMsg,
+                            savedLocally: false,
+                            data: result.data
+                        });
+                    }
                 }).catch(function(err) {
-                    resolve({ success: true, count: products.length, savedLocally: true, warning: err.message });
+                    resolve({
+                        success: false,
+                        count: products.length,
+                        savedLocally: false,
+                        warning: err.message,
+                        error: "Không thể kết nối đến Inkvibe Admin (localhost:9000): " + err.message
+                    });
                 });
             });
         });

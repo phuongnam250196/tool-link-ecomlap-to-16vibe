@@ -30,11 +30,7 @@
     {
       "matches": [
         "*://ecomlap.com/*",
-        "*://*.ecomlap.com/*",
-        "*://gemini.google.com/*",
-        "*://ai.google.dev/*",
-        "http://localhost:3000/*",
-        "http://127.0.0.1:3000/*"
+        "*://*.ecomlap.com/*"
       ],
       "js": [
         "scripts/content/product-interceptor.js"
@@ -44,11 +40,7 @@
     {
       "matches": [
         "*://ecomlap.com/*",
-        "*://*.ecomlap.com/*",
-        "*://gemini.google.com/*",
-        "*://ai.google.dev/*",
-        "http://localhost:3000/*",
-        "http://127.0.0.1:3000/*"
+        "*://*.ecomlap.com/*"
       ],
       "js": [
         "scripts/content/gemini-content.js",
@@ -59,6 +51,19 @@
         "assets/styles/gemini-manager.css",
         "assets/styles/design-ideas-manager.css",
         "assets/styles/link-16vibe-modal.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "*://gemini.google.com/*",
+        "*://ai.google.dev/*"
+      ],
+      "js": [
+        "scripts/content/gemini-content.js"
+      ],
+      "css": [
+        "assets/styles/gemini.css"
       ],
       "run_at": "document_idle"
     }

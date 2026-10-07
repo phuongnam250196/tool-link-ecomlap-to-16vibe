@@ -1,344 +1,621 @@
 /**
- * 16vibe Assistant - Link 16vibe Modal Content Script
- * 
- * Handles:
- * 1. Listening for '16vibe-open-link-modal' event and capture-phase click on "Link 16vibe"
- * 2. Auto-injecting modal styles to guarantee UI visibility
- * 3. Fetching all active personalization configs from https://ecomlap.com/api/product-personalization-configs?status=active&limit=100
- *    via Main World authenticated bridge + deep JWT token search
- * 4. Fetching store metadata (all 11 categories in tree hierarchy, 39 collections, trending tags) from Inkvibe (localhost:9000)
- * 5. Hierarchical tree select for categories with parent-child branch visualizers and breadcrumb path indicator
- * 6. Interactive Inkvibe Tags suggestion badges for quick appending
- * 7. Dynamic placeholder insertion ({{item_name}}, {{item_sku}}, etc.)
- * 8. Batch linking products to Inkvibe database
+ * Link 16vibe Modal Component
+ * Displays modal for syncing/linking selected products to Inkvibe Medusa backend.
+ * Fully aligned with reference mockup and supports:
+ * - Real personalization configs from Ecomlap
+ * - Inkvibe hierarchical category tree select & breadcrumbs
+ * - Ancestor chain for category_ids (parent -> child)
+ * - Multi-image extraction: main_image_url + other_image_url1..10 + additional images
+ * - Single product toggle vs full variants, base price, inventory tracking, upsert
  */
 
 (function () {
     'use strict';
 
-    let currentSelectedProducts = [];
+    if (typeof window !== 'undefined' && window.location && window.location.hostname && !window.location.hostname.includes('ecomlap.com')) {
+        return;
+    }
+
     let modalElement = null;
+    let currentSelectedProducts = [];
     let lastActiveField = null;
+    let cachedPersonalizationConfigs = null;
+    let cachedInkvibeMetadata = null;
+    let cachedCategoriesList = [];
+
+    // State for dynamic variants matrix & custom table
+    let matrixColors = [
+        { name: 'Black', extra: 0 }
+    ];
+    let matrixSizes = [
+        { name: 'Small', extra: 0 },
+        { name: 'Medium', extra: 1.00 },
+        { name: 'Large', extra: 2.00 },
+        { name: 'X-Large', extra: 3.00 },
+        { name: '2X-Large', extra: 4.00 },
+        { name: '3X-Large', extra: 5.00 }
+    ];
+    let tableOptionTitles = ['Color', 'Size'];
+    let tableVariants = [
+        { Color: 'Black', Size: 'Small', price: 29.95 },
+        { Color: 'Black', Size: 'Medium', price: 30.95 },
+        { Color: 'Black', Size: 'Large', price: 31.95 },
+        { Color: 'Black', Size: 'X-Large', price: 32.95 },
+        { Color: 'Black', Size: '2X-Large', price: 33.95 },
+        { Color: 'Black', Size: '3X-Large', price: 34.95 }
+    ];
 
     /**
-     * Auto-inject Modal CSS
+     * Inject Modal Styles directly into DOM to guarantee styling and visibility
      */
-    function injectModalStyles() {
-        if (document.getElementById('vibe-link-modal-injected-style')) return;
-        const style = document.createElement('style');
-        style.id = 'vibe-link-modal-injected-style';
-        style.textContent = "/* ==========================================================================\n   16vibe Assistant - Link 16vibe Modal Styles\n   Matches reference mockup UI from user design\n   ========================================================================== */\n\n.vibe-link-modal-overlay {\n    position: fixed;\n    top: 0;\n    left: 0;\n    width: 100vw;\n    height: 100vh;\n    background: rgba(15, 23, 42, 0.65);\n    backdrop-filter: blur(4px);\n    -webkit-backdrop-filter: blur(4px);\n    z-index: 9999999;\n    display: flex;\n    align-items: center;\n    justify-content: center;\n    opacity: 0;\n    visibility: hidden;\n    transition: opacity 0.25s ease, visibility 0.25s ease;\n    font-family: -apple-system, BlinkMacSystemFont, \"Segoe UI\", Roboto, Helvetica, Arial, sans-serif;\n    color: #1e293b;\n    box-sizing: border-box;\n}\n\n.vibe-link-modal-overlay * {\n    box-sizing: border-box;\n}\n\n.vibe-link-modal-overlay.active {\n    opacity: 1;\n    visibility: visible;\n}\n\n.vibe-link-modal-dialog {\n    width: 95%;\n    max-width: 980px;\n    max-height: 92vh;\n    background: #ffffff;\n    border-radius: 12px;\n    box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.25), 0 0 0 1px rgba(0, 0, 0, 0.05);\n    display: flex;\n    flex-direction: column;\n    overflow: hidden;\n    transform: translateY(16px) scale(0.98);\n    transition: transform 0.25s cubic-bezier(0.16, 1, 0.3, 1);\n}\n\n.vibe-link-modal-overlay.active .vibe-link-modal-dialog {\n    transform: translateY(0) scale(1);\n}\n\n/* Header */\n.vibe-modal-header {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 18px 24px;\n    background: #ffffff;\n    border-bottom: 1px solid #e2e8f0;\n}\n\n.vibe-modal-title-wrap {\n    display: flex;\n    flex-direction: column;\n    gap: 4px;\n}\n\n.vibe-modal-title {\n    margin: 0;\n    font-size: 18px;\n    font-weight: 700;\n    color: #0f172a;\n    display: flex;\n    align-items: center;\n    gap: 8px;\n}\n\n.vibe-modal-title-icon {\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    width: 32px;\n    height: 32px;\n    background: #eff6ff;\n    color: #2563eb;\n    border-radius: 8px;\n    font-size: 16px;\n}\n\n.vibe-modal-subtitle {\n    margin: 0;\n    font-size: 13px;\n    color: #64748b;\n}\n\n.vibe-modal-close-btn {\n    border: none;\n    background: #f1f5f9;\n    color: #64748b;\n    width: 34px;\n    height: 34px;\n    border-radius: 50%;\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    cursor: pointer;\n    font-size: 18px;\n    line-height: 1;\n    transition: all 0.15s ease;\n}\n\n.vibe-modal-close-btn:hover {\n    background: #e2e8f0;\n    color: #0f172a;\n}\n\n/* Body */\n.vibe-modal-body {\n    padding: 24px;\n    overflow-y: auto;\n    max-height: calc(92vh - 145px);\n    display: grid;\n    grid-template-columns: 1.15fr 0.85fr;\n    gap: 24px;\n    background: #f8fafc;\n}\n\n@media (max-width: 820px) {\n    .vibe-modal-body {\n        grid-template-columns: 1fr;\n    }\n}\n\n.vibe-modal-col {\n    display: flex;\n    flex-direction: column;\n    gap: 18px;\n}\n\n.vibe-card {\n    background: #ffffff;\n    border: 1px solid #e2e8f0;\n    border-radius: 10px;\n    padding: 18px;\n    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);\n}\n\n.vibe-card-title {\n    font-size: 14px;\n    font-weight: 700;\n    color: #1e293b;\n    margin: 0 0 14px 0;\n    display: flex;\n    align-items: center;\n    gap: 6px;\n    text-transform: uppercase;\n    letter-spacing: 0.03em;\n}\n\n.vibe-form-group {\n    display: flex;\n    flex-direction: column;\n    gap: 6px;\n    margin-bottom: 14px;\n}\n\n.vibe-form-group:last-child {\n    margin-bottom: 0;\n}\n\n.vibe-form-label {\n    font-size: 13px;\n    font-weight: 600;\n    color: #334155;\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n}\n\n.vibe-form-label-hint {\n    font-size: 11px;\n    font-weight: 400;\n    color: #94a3b8;\n}\n\n.vibe-input,\n.vibe-select,\n.vibe-textarea {\n    width: 100%;\n    padding: 9px 12px;\n    font-size: 13px;\n    color: #0f172a;\n    background: #ffffff;\n    border: 1px solid #cbd5e1;\n    border-radius: 6px;\n    outline: none;\n    transition: border-color 0.15s ease, box-shadow 0.15s ease;\n    font-family: inherit;\n}\n\n.vibe-input:focus,\n.vibe-select:focus,\n.vibe-textarea:focus {\n    border-color: #3b82f6;\n    box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.15);\n}\n\n.vibe-textarea {\n    resize: vertical;\n    min-height: 85px;\n    line-height: 1.5;\n}\n\n.vibe-input-wrap-flex {\n    display: flex;\n    gap: 6px;\n    align-items: center;\n}\n\n.vibe-btn-refresh-field {\n    background: #eff6ff;\n    color: #2563eb;\n    border: 1px solid #bfdbfe;\n    border-radius: 6px;\n    width: 36px;\n    height: 36px;\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    cursor: pointer;\n    font-size: 14px;\n    flex-shrink: 0;\n    transition: all 0.15s ease;\n}\n\n.vibe-btn-refresh-field:hover {\n    background: #dbeafe;\n}\n\n/* Dynamic Placeholder Badges */\n.vibe-placeholder-box {\n    background: #f8fafc;\n    border: 1px dashed #cbd5e1;\n    border-radius: 6px;\n    padding: 10px;\n    margin-top: 6px;\n}\n\n.vibe-placeholder-header {\n    font-size: 11px;\n    font-weight: 600;\n    color: #64748b;\n    margin-bottom: 6px;\n    display: flex;\n    align-items: center;\n    gap: 4px;\n}\n\n.vibe-badges-container {\n    display: flex;\n    flex-wrap: wrap;\n    gap: 6px;\n}\n\n.vibe-badge-token {\n    display: inline-flex;\n    align-items: center;\n    padding: 3px 8px;\n    background: #ffffff;\n    border: 1px solid #e2e8f0;\n    border-radius: 4px;\n    font-family: \"SFMono-Regular\", Consolas, \"Liberation Mono\", Menlo, monospace;\n    font-size: 11px;\n    color: #3b82f6;\n    cursor: pointer;\n    user-select: none;\n    transition: all 0.15s ease;\n}\n\n.vibe-badge-token:hover {\n    background: #eff6ff;\n    border-color: #93c5fd;\n    transform: translateY(-1px);\n}\n\n.vibe-badge-token:active {\n    transform: translateY(0);\n}\n\n/* Image preview row */\n.vibe-img-preview-list {\n    display: flex;\n    gap: 8px;\n    overflow-x: auto;\n    padding: 8px 2px;\n    margin-top: 6px;\n    scrollbar-width: thin;\n}\n\n.vibe-img-preview-item {\n    position: relative;\n    width: 54px;\n    height: 54px;\n    border-radius: 6px;\n    border: 1px solid #e2e8f0;\n    overflow: hidden;\n    flex-shrink: 0;\n    background: #f1f5f9;\n}\n\n.vibe-img-preview-item img {\n    width: 100%;\n    height: 100%;\n    object-fit: cover;\n}\n\n/* Switch & Checkbox */\n.vibe-switch-row {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 6px 0;\n    cursor: pointer;\n}\n\n.vibe-switch-label-wrap {\n    display: flex;\n    flex-direction: column;\n}\n\n.vibe-switch-title {\n    font-size: 13px;\n    font-weight: 600;\n    color: #1e293b;\n}\n\n.vibe-switch-desc {\n    font-size: 11px;\n    color: #64748b;\n}\n\n.vibe-switch {\n    position: relative;\n    display: inline-block;\n    width: 40px;\n    height: 22px;\n    flex-shrink: 0;\n}\n\n.vibe-switch input {\n    opacity: 0;\n    width: 0;\n    height: 0;\n}\n\n.vibe-switch-slider {\n    position: absolute;\n    cursor: pointer;\n    top: 0;\n    left: 0;\n    right: 0;\n    bottom: 0;\n    background-color: #cbd5e1;\n    transition: 0.25s;\n    border-radius: 34px;\n}\n\n.vibe-switch-slider:before {\n    position: absolute;\n    content: \"\";\n    height: 16px;\n    width: 16px;\n    left: 3px;\n    bottom: 3px;\n    background-color: white;\n    transition: 0.25s;\n    border-radius: 50%;\n    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);\n}\n\n.vibe-switch input:checked + .vibe-switch-slider {\n    background-color: #10b981;\n}\n\n.vibe-switch input:checked + .vibe-switch-slider:before {\n    transform: translateX(18px);\n}\n\n/* Footer */\n.vibe-modal-footer {\n    display: flex;\n    align-items: center;\n    justify-content: space-between;\n    padding: 16px 24px;\n    background: #ffffff;\n    border-top: 1px solid #e2e8f0;\n}\n\n.vibe-footer-status {\n    display: flex;\n    align-items: center;\n    gap: 12px;\n    font-size: 12px;\n    color: #64748b;\n}\n\n.vibe-status-pill {\n    display: inline-flex;\n    align-items: center;\n    gap: 6px;\n    padding: 4px 10px;\n    border-radius: 9999px;\n    background: #ecfdf5;\n    color: #065f46;\n    font-weight: 500;\n    font-size: 11px;\n    border: 1px solid #a7f3d0;\n}\n\n.vibe-status-pill.warning {\n    background: #fffbeb;\n    color: #92400e;\n    border-color: #fde68a;\n}\n\n.vibe-footer-actions {\n    display: flex;\n    align-items: center;\n    gap: 10px;\n}\n\n.vibe-btn {\n    display: inline-flex;\n    align-items: center;\n    justify-content: center;\n    gap: 6px;\n    padding: 9px 18px;\n    border-radius: 6px;\n    font-size: 13px;\n    font-weight: 600;\n    cursor: pointer;\n    border: 1px solid transparent;\n    transition: all 0.15s ease;\n    outline: none;\n}\n\n.vibe-btn-ghost {\n    background: #f1f5f9;\n    color: #475569;\n    border-color: #cbd5e1;\n}\n\n.vibe-btn-ghost:hover {\n    background: #e2e8f0;\n    color: #1e293b;\n}\n\n.vibe-btn-primary {\n    background: linear-gradient(135deg, #2563eb, #1d4ed8);\n    color: #ffffff;\n    box-shadow: 0 2px 4px rgba(37, 99, 235, 0.25);\n}\n\n.vibe-btn-primary:hover {\n    background: linear-gradient(135deg, #1d4ed8, #1e40af);\n    box-shadow: 0 4px 8px rgba(37, 99, 235, 0.35);\n}\n\n.vibe-btn-primary:disabled {\n    opacity: 0.65;\n    cursor: not-allowed;\n    transform: none !important;\n}\n\n/* Toast alert notification */\n.vibe-toast-notice {\n    position: fixed;\n    bottom: 24px;\n    right: 24px;\n    z-index: 10000000;\n    padding: 12px 18px;\n    border-radius: 8px;\n    background: #0f172a;\n    color: #ffffff;\n    font-size: 13px;\n    box-shadow: 0 10px 25px rgba(0, 0, 0, 0.25);\n    display: flex;\n    align-items: center;\n    gap: 8px;\n    opacity: 0;\n    transform: translateY(12px);\n    transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);\n    pointer-events: none;\n}\n\n.vibe-toast-notice.show {\n    opacity: 1;\n    transform: translateY(0);\n}\n\n.vibe-toast-notice.success {\n    background: #065f46;\n    border: 1px solid #059669;\n}\n\n.vibe-toast-notice.error {\n    background: #991b1b;\n    border: 1px solid #dc2626;\n}\n";
-        (document.head || document.documentElement).appendChild(style);
-    }
+    function ensureModalStylesInjected() {
+        if (typeof document === 'undefined') return;
 
-    injectModalStyles();
-    if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', injectModalStyles);
-    }
-
-    /**
-     * Deep search for authentication token
-     */
-    function getAuthHeaders() {
-        const headers = { 'Accept': 'application/json' };
-        
-        // 1. From DOM attribute set by in-page network hook
-        try {
-            const domAuth = document.documentElement.getAttribute('data-16vibe-auth');
-            if (domAuth && domAuth.length > 20) {
-                headers['Authorization'] = domAuth.startsWith('Bearer ') ? domAuth : 'Bearer ' + domAuth;
-                return headers;
-            }
-        } catch(e) {}
-
-        // 2. From window variable if accessible
-        if (typeof window !== 'undefined' && window.__16vibe_auth_token && window.__16vibe_auth_token.length > 20) {
-            const token = window.__16vibe_auth_token;
-            headers['Authorization'] = token.startsWith('Bearer ') ? token : 'Bearer ' + token;
-            return headers;
+        // 1. Inject critical layout & visibility style immediately
+        if (!document.getElementById('vibe-link-modal-critical-styles')) {
+            const style = document.createElement('style');
+            style.id = 'vibe-link-modal-critical-styles';
+            style.textContent = `
+                .vibe-link-modal-overlay {
+                    position: fixed !important;
+                    top: 0 !important;
+                    left: 0 !important;
+                    width: 100vw !important;
+                    height: 100vh !important;
+                    background: rgba(15, 23, 42, 0.7) !important;
+                    backdrop-filter: blur(4px) !important;
+                    -webkit-backdrop-filter: blur(4px) !important;
+                    z-index: 2147483647 !important;
+                    display: none;
+                    align-items: center !important;
+                    justify-content: center !important;
+                    box-sizing: border-box !important;
+                    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif !important;
+                }
+                .vibe-link-modal-overlay.active {
+                    display: flex !important;
+                    opacity: 1 !important;
+                    visibility: visible !important;
+                    pointer-events: auto !important;
+                }
+                .vibe-link-modal-dialog {
+                    width: 95% !important;
+                    max-width: 960px !important;
+                    max-height: 94vh !important;
+                    background: #ffffff !important;
+                    border-radius: 12px !important;
+                    box-shadow: 0 20px 45px -10px rgba(0, 0, 0, 0.35) !important;
+                    display: flex !important;
+                    flex-direction: column !important;
+                    overflow: hidden !important;
+                    color: #1e293b !important;
+                }
+            `;
+            (document.head || document.documentElement).appendChild(style);
         }
 
-        // 3. Scan localStorage & sessionStorage literal keys
-        try {
-            const tokenKeys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token', 'auth', 'user', 'session'];
-            for (const k of tokenKeys) {
-                const val = localStorage.getItem(k) || sessionStorage.getItem(k);
-                if (val) {
-                    if (typeof val === 'string' && val.length > 20 && !val.startsWith('{')) {
-                        headers['Authorization'] = val.startsWith('Bearer ') ? val : 'Bearer ' + val;
-                        return headers;
-                    }
-                    if (val.startsWith('{')) {
-                        try {
-                            const parsed = JSON.parse(val);
-                            const t = parsed.token || parsed.accessToken || parsed.access_token || parsed.jwt || (parsed.user && parsed.user.token) || (parsed.data && parsed.data.token);
-                            if (t && typeof t === 'string' && t.length > 15) {
-                                headers['Authorization'] = t.startsWith('Bearer ') ? t : 'Bearer ' + t;
-                                return headers;
-                            }
-                        } catch(e) {}
-                    }
+        // 2. Inject full stylesheet via chrome.runtime.getURL
+        if (!document.getElementById('vibe-link-modal-styles-link') && typeof chrome !== 'undefined' && chrome.runtime && typeof chrome.runtime.getURL === 'function') {
+            try {
+                const link = document.createElement('link');
+                link.id = 'vibe-link-modal-styles-link';
+                link.rel = 'stylesheet';
+                link.type = 'text/css';
+                link.href = chrome.runtime.getURL('assets/styles/link-16vibe-modal.css');
+                (document.head || document.documentElement).appendChild(link);
+            } catch (e) {}
+        }
+    }
+
+    ensureModalStylesInjected();
+    if (typeof document !== 'undefined' && document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', ensureModalStylesInjected);
+    }
+
+    /**
+     * Toast notification helper
+     */
+    function showToast(message, type = 'info') {
+        const existing = document.querySelectorAll('.vibe-toast-msg');
+        existing.forEach(el => el.remove());
+
+        const toast = document.createElement('div');
+        toast.className = 'vibe-toast-msg ' + type;
+        const icon = (type === 'success') ? '✅' : (type === 'error') ? '⚠️' : 'ℹ️';
+        toast.innerHTML = '<span>' + icon + '</span><span>' + message + '</span>';
+        document.body.appendChild(toast);
+
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transform = 'translateY(12px)';
+            toast.style.transition = 'all 0.3s ease';
+            setTimeout(() => toast.remove(), 300);
+        }, 4000);
+    }
+
+    /**
+     * Accurately extract the true product name from all possible Ecomlap properties
+     */
+    function extractProductName(p, idx) {
+        if (!p) return 'Sản phẩm #' + ((idx || 0) + 1);
+        if (typeof p === 'string' && p.trim()) return p.trim();
+
+        const raw = (p && typeof p.raw === 'object' && p.raw) ? p.raw : {};
+        const candidates = [
+            p.item_name,
+            p.itemName,
+            p.product_name,
+            p.productName,
+            p.name,
+            p.title,
+            p.product_title,
+            p.productTitle,
+            raw.item_name,
+            raw.itemName,
+            raw.product_name,
+            raw.productName,
+            raw.name,
+            raw.title,
+            raw.product_title,
+            raw.productTitle,
+            p.design_name,
+            p.design_title,
+            p.prompt,
+            p.handle
+        ];
+
+        for (const c of candidates) {
+            if (typeof c === 'string' && c.trim()) {
+                const clean = c.trim();
+                // Filter out placeholder names if real names exist
+                if (!/^untitled|không tên|product$|^sản phẩm #\d+$/i.test(clean)) {
+                    return clean;
                 }
             }
-        } catch (e) {}
+        }
 
-        // 4. Scan ALL localStorage for JWT token (contains eyJ...)
+        for (const c of candidates) {
+            if (typeof c === 'string' && c.trim()) {
+                return c.trim();
+            }
+        }
+
+        return 'Sản phẩm #' + ((idx || 0) + 1);
+    }
+
+    /**
+     * Accurately extract product title from a table row or card element in DOM
+     */
+    function extractTitleFromRow(container) {
+        if (!container) return '';
+
+        const explicitSelectors = [
+            '[data-field="item_name"]',
+            '[data-field="product_name"]',
+            '[data-field="name"]',
+            '[data-field="title"]',
+            '.item-name',
+            '.product-name',
+            '.item-title',
+            '.product-title',
+            '[class*="item-name"]',
+            '[class*="product-name"]',
+            '[class*="item_name"]',
+            '[class*="product_name"]',
+            '[class*="itemTitle"]',
+            '[class*="productTitle"]',
+            'a[href*="/product/"]',
+            'a[href*="/products/"]',
+            'a[href*="/item/"]',
+            'a[href*="/items/"]'
+        ];
+
+        for (const sel of explicitSelectors) {
+            const el = container.querySelector(sel);
+            if (el) {
+                const txt = el.textContent.trim();
+                if (txt && txt.length > 2 && !/^(select all|chọn tất cả|hành động|action|sửa|xóa|view|edit)$/i.test(txt)) {
+                    return txt;
+                }
+            }
+        }
+
+        const cells = Array.from(container.querySelectorAll('td, th'));
+        if (cells.length > 0) {
+            const candidates = [];
+            cells.forEach((td) => {
+                if (td.querySelector('input[type="checkbox"]')) return;
+                const hasImg = td.querySelector('img');
+                const txt = td.textContent.trim();
+                if (hasImg && txt.length < 3) return;
+
+                if (/^(\$|₫|USD|VND)?\s*\d+([.,]\d+)?\s*(\$|₫|USD|VND)?$/i.test(txt)) return;
+                if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(txt)) return;
+                if (/^(active|inactive|draft|published|pending|đã dùng|chưa dùng|đã xuất bản)$/i.test(txt)) return;
+                if (/^(edit|delete|view|sửa|xóa|xem|link|chi tiết|action)$/i.test(txt)) return;
+
+                const link = td.querySelector('a');
+                if (link && link.textContent.trim().length > 3) {
+                    candidates.push({ text: link.textContent.trim(), score: 50 + link.textContent.trim().length });
+                    return;
+                }
+
+                if (txt.length > 3) {
+                    candidates.push({ text: txt, score: txt.length });
+                }
+            });
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.score - a.score);
+                return candidates[0].text;
+            }
+        }
+
+        const cardTitle = container.querySelector('.title, .name, h3, h4, h5, a');
+        if (cardTitle && cardTitle.textContent.trim().length > 2) {
+            return cardTitle.textContent.trim();
+        }
+
+        return '';
+    }
+
+    /**
+     * Resolve ancestor chain for category_ids: [parent_id, ..., leaf_id]
+     */
+    function getCategoryAncestorIds(selectedId, categoriesList) {
+        if (!selectedId) return [];
+        const idToCat = new Map((categoriesList || []).map(c => [c.id, c]));
+        const chain = [];
+        let curr = idToCat.get(selectedId);
+        let depth = 0;
+        while (curr && depth < 10) {
+            chain.unshift(curr.id); // Parent first, child last
+            curr = curr.parent_category_id ? idToCat.get(curr.parent_category_id) : null;
+            depth++;
+        }
+        return chain;
+    }
+
+    /**
+     * Deep scanner for JWT token across all possible storages
+     */
+    function findTokenAnywhere() {
         try {
+            if (typeof window === 'undefined') return '';
+            const testJwt = (val) => {
+                if (!val || typeof val !== 'string') return false;
+                const trimmed = val.replace(/^Bearer\s+/i, '').trim();
+                return /^eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}$/.test(trimmed);
+            };
+
+            const directKeys = [
+                'token', 'access_token', 'jwt', 'hmt-token', 'auth_token',
+                'user_token', 'authToken', 'accessToken', 'loginToken',
+                'ecomlap_token', 'ecomlap_jwt', 'admin_token'
+            ];
+
+            for (const k of directKeys) {
+                try {
+                    const v1 = localStorage.getItem(k);
+                    if (testJwt(v1)) return v1.replace(/^Bearer\s+/i, '').trim();
+                    const v2 = sessionStorage.getItem(k);
+                    if (testJwt(v2)) return v2.replace(/^Bearer\s+/i, '').trim();
+                } catch (e) {}
+            }
+
             for (let i = 0; i < localStorage.length; i++) {
                 const k = localStorage.key(i);
                 const val = localStorage.getItem(k);
-                if (val && typeof val === 'string' && val.includes('eyJ')) {
-                    const match = val.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
-                    if (match) {
-                        headers['Authorization'] = 'Bearer ' + match[0];
-                        return headers;
-                    }
+                if (testJwt(val)) return val.replace(/^Bearer\s+/i, '').trim();
+                if (val && (val.startsWith('{') || val.startsWith('['))) {
+                    try {
+                        const parsed = JSON.parse(val);
+                        for (const subKey of directKeys) {
+                            if (parsed && testJwt(parsed[subKey])) {
+                                return parsed[subKey].replace(/^Bearer\s+/i, '').trim();
+                            }
+                        }
+                    } catch (e) {}
                 }
             }
-        } catch(e) {}
 
-        // 5. Scan document.cookie for JWT token
-        try {
-            const cookies = document.cookie.split(';');
+            for (let i = 0; i < sessionStorage.length; i++) {
+                const k = sessionStorage.key(i);
+                const val = sessionStorage.getItem(k);
+                if (testJwt(val)) return val.replace(/^Bearer\s+/i, '').trim();
+                if (val && (val.startsWith('{') || val.startsWith('['))) {
+                    try {
+                        const parsed = JSON.parse(val);
+                        for (const subKey of directKeys) {
+                            if (parsed && testJwt(parsed[subKey])) {
+                                return parsed[subKey].replace(/^Bearer\s+/i, '').trim();
+                            }
+                        }
+                    } catch (e) {}
+                }
+            }
+
+            const cookies = document.cookie ? document.cookie.split(';') : [];
             for (const c of cookies) {
-                const trimmed = c.trim();
-                if (trimmed.includes('eyJ')) {
-                    const match = trimmed.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
-                    if (match) {
-                        headers['Authorization'] = 'Bearer ' + match[0];
-                        return headers;
-                    }
+                const parts = c.split('=');
+                const name = (parts[0] || '').trim();
+                const val = decodeURIComponent((parts[1] || '').trim());
+                if (directKeys.includes(name) && testJwt(val)) {
+                    return val.replace(/^Bearer\s+/i, '').trim();
+                }
+                if (testJwt(val)) {
+                    return val.replace(/^Bearer\s+/i, '').trim();
                 }
             }
-        } catch(e) {}
-
-        return headers;
+        } catch (e) {}
+        return '';
     }
 
     /**
-     * Show notification toast
+     * Request Main World page context to fetch Personalization configs via bridge
      */
-    function showToast(message, type = 'success') {
-        let toast = document.getElementById('vibe-link-toast');
-        if (!toast) {
-            toast = document.createElement('div');
-            toast.id = 'vibe-link-toast';
-            toast.className = 'vibe-toast-notice';
-            document.body.appendChild(toast);
-        }
-        toast.className = 'vibe-toast-notice ' + type + ' show';
-        toast.innerHTML = (type === 'success' ? '✅ ' : '⚠️ ') + message;
-        setTimeout(() => {
-            if (toast) toast.className = 'vibe-toast-notice ' + type;
-        }, 3500);
-    }
-
-    /**
-     * Extract personalization configs list from raw API payload
-     */
-    function extractPersonalizationList(data) {
-        if (!data) return [];
-        let rawList = [];
-
-        if (Array.isArray(data)) {
-            rawList = data;
-        } else if (data && typeof data === 'object') {
-            if (Array.isArray(data.data)) rawList = data.data;
-            else if (Array.isArray(data.items)) rawList = data.items;
-            else if (Array.isArray(data.docs)) rawList = data.docs;
-            else if (Array.isArray(data.configs)) rawList = data.configs;
-            else if (Array.isArray(data.personalizations)) rawList = data.personalizations;
-            else if (Array.isArray(data.personalization_configs)) rawList = data.personalization_configs;
-            else if (data.data && typeof data.data === 'object') {
-                if (Array.isArray(data.data.items)) rawList = data.data.items;
-                else if (Array.isArray(data.data.docs)) rawList = data.data.docs;
-                else if (Array.isArray(data.data.configs)) rawList = data.data.configs;
-                else if (Array.isArray(data.data.data)) rawList = data.data.data;
-            }
-        }
-
-        console.log('[16vibe] Raw Ecomlap Personalization extracted list (count: ' + rawList.length + '):', rawList);
-
-        const list = rawList.map((item, idx) => {
-            const id = item._id || item.id || item.code || item.config_id || ('cfg_' + (idx + 1));
-            const name = item.name || item.title || item.config_name || item.configName || item.label || item.code || item.template_name || ('Cấu hình #' + (idx + 1));
-            return {
-                id: String(id),
-                name: String(name),
-                status: item.status,
-                raw: item
-            };
-        }).filter(item => item.id && item.name);
-
-        console.log('[16vibe] Processed personalization items for dropdown (count: ' + list.length + '):', list);
-        return list;
-    }
-
-    /**
-     * Fetch personalization configs from ecomlap.com
-     */
-    function fetchPersonalizationConfigs() {
-        return new Promise(async (resolve) => {
-            let resolved = false;
-
-            const responseHandler = (e) => {
-                if (resolved) return;
-                const detail = e.detail;
-                if (detail && detail.success && detail.data) {
-                    const list = extractPersonalizationList(detail.data);
-                    if (list.length > 0) {
-                        resolved = true;
-                        window.removeEventListener('16vibe-personalization-response', responseHandler);
-                        console.log('[16vibe] Nhận thành công ' + list.length + ' cấu hình cá nhân hóa thật từ In-Page Bridge:', list);
-                        return resolve(list);
-                    }
-                }
-            };
-            window.addEventListener('16vibe-personalization-response', responseHandler);
-
-            // 1. Trigger in-page fetch
-            try {
-                window.dispatchEvent(new CustomEvent('16vibe-fetch-personalization'));
-            } catch(e) {}
-
-            // 2. Direct fetch from content script
-            const targetUrl = window.location.origin.includes('ecomlap.com')
-                ? '/api/product-personalization-configs?status=active&limit=100'
-                : 'https://ecomlap.com/api/product-personalization-configs?status=active&limit=100';
-
-            try {
-                const headers = getAuthHeaders();
-                console.log('[16vibe] Content Script direct fetch to ' + targetUrl + ' with headers:', headers);
-                const res = await fetch(targetUrl, {
-                    method: 'GET',
-                    headers: headers,
-                    credentials: 'include'
-                });
-                console.log('[16vibe] Content Script direct fetch status:', res.status);
-                if (res.ok) {
-                    const json = await res.json();
-                    const list = extractPersonalizationList(json);
-                    if (list.length > 0 && !resolved) {
-                        resolved = true;
-                        window.removeEventListener('16vibe-personalization-response', responseHandler);
-                        console.log('[16vibe] Nhận thành công ' + list.length + ' cấu hình cá nhân hóa thật từ Direct Fetch:', list);
-                        return resolve(list);
-                    }
-                }
-            } catch (e) {
-                console.warn('[16vibe] Direct fetch error:', e);
-            }
-
-            // 3. Timeout handler (8 seconds)
-            setTimeout(() => {
-                if (!resolved) {
-                    resolved = true;
-                    window.removeEventListener('16vibe-personalization-response', responseHandler);
-                    console.warn('[16vibe] Không thể tải cấu hình cá nhân hóa sau 8s.');
-                    resolve([]);
-                }
-            }, 8000);
-        });
-    }
-
-    /**
-     * Fetch Inkvibe metadata via background service worker
-     */
-    function fetchInkvibeMetadata() {
+    function fetchPersonalizationConfigsViaMainWorld() {
         return new Promise((resolve) => {
-            try {
-                chrome.runtime.sendMessage({ action: 'getInkvibeMetadata' }, (response) => {
-                    if (response && response.success && response.data) {
-                        resolve(response.data);
-                    } else {
-                        resolve({
-                            categories: [],
-                            collections: [],
-                            tags: [],
-                            salesChannels: [{ id: 'sc_default', name: 'Default Sales Channel' }],
-                            shippingProfiles: [{ id: 'sp_default', name: 'Default Shipping Profile' }],
-                            productTypes: [{ id: 'pt_shirt', value: 'Shirt' }]
-                        });
-                    }
-                });
-            } catch (err) {
-                resolve({
-                    categories: [],
-                    collections: [],
-                    tags: [],
-                    salesChannels: [{ id: 'sc_default', name: 'Default Sales Channel' }],
-                    shippingProfiles: [{ id: 'sp_default', name: 'Default Shipping Profile' }],
-                    productTypes: [{ id: 'pt_shirt', value: 'Shirt' }]
-                });
+            const reqId = 'req_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
+            let cleanedUp = false;
+
+            const timer = setTimeout(() => {
+                cleanup();
+                resolve(null);
+            }, 3500);
+
+            function cleanup() {
+                if (cleanedUp) return;
+                cleanedUp = true;
+                clearTimeout(timer);
+                window.removeEventListener('message', onMsg);
+                window.removeEventListener('16vibe-personalization-response', onCustomEvt);
             }
+
+            function onMsg(event) {
+                if (event.source !== window || !event.data) return;
+                if (event.data.type === '16VIBE_PERSONALIZATION_CONFIGS_RES' && event.data.requestId === reqId) {
+                    cleanup();
+                    resolve(event.data.items || null);
+                }
+            }
+
+            function onCustomEvt(event) {
+                if (event.detail && event.detail.success) {
+                    const data = event.detail.data;
+                    const items = event.detail.items || (Array.isArray(data) ? data : (data?.data || data?.configs || data?.items || []));
+                    cleanup();
+                    resolve(items || null);
+                }
+            }
+
+            window.addEventListener('message', onMsg);
+            window.addEventListener('16vibe-personalization-response', onCustomEvt);
+
+            // Dispatch both CustomEvent and postMessage for maximum compatibility
+            try {
+                window.dispatchEvent(new CustomEvent('16vibe-fetch-personalization', { detail: { requestId: reqId } }));
+            } catch (e) {}
+
+            try {
+                window.postMessage({
+                    type: '16VIBE_FETCH_PERSONALIZATION_CONFIGS_REQ',
+                    requestId: reqId
+                }, '*');
+            } catch (e) {}
         });
     }
 
     /**
-     * Build hierarchical category tree from flat category list
+     * Fetch Personalization Configs
+     */
+    async function fetchPersonalizationConfigs() {
+        if (cachedPersonalizationConfigs && cachedPersonalizationConfigs.length > 0) {
+            return cachedPersonalizationConfigs;
+        }
+
+        try {
+            const bridgeItems = await fetchPersonalizationConfigsViaMainWorld();
+            if (Array.isArray(bridgeItems) && bridgeItems.length > 0) {
+                const mapped = bridgeItems.map((c, i) => ({
+                    id: String(c._id || c.id || ('cfg_' + (i + 1))),
+                    name: c.name || c.title || c.code || ('Cấu hình cá nhân hóa #' + (i + 1)),
+                    code: c.code || '',
+                    raw: c
+                }));
+                cachedPersonalizationConfigs = mapped;
+                return mapped;
+            }
+        } catch (e) {}
+
+        const token = findTokenAnywhere();
+        const headers = { 'Accept': 'application/json, text/plain, */*' };
+        if (token) {
+            headers['Authorization'] = 'Bearer ' + token;
+            headers['hmt-token'] = token;
+        }
+
+        try {
+            const res = await fetch('https://ecomlap.com/api/product-personalization-configs?status=active&limit=100', {
+                method: 'GET',
+                credentials: 'include',
+                headers: headers
+            });
+
+            if (res.ok) {
+                const json = await res.json();
+                let items = [];
+                if (Array.isArray(json)) items = json;
+                else if (json.docs && Array.isArray(json.docs)) items = json.docs;
+                else if (json.data && Array.isArray(json.data)) items = json.data;
+                else if (json.configs && Array.isArray(json.configs)) items = json.configs;
+                else if (json.items && Array.isArray(json.items)) items = json.items;
+
+                const mapped = items.map((c, i) => ({
+                    id: String(c._id || c.id || ('cfg_' + (i + 1))),
+                    name: c.name || c.title || c.code || ('Cấu hình cá nhân hóa #' + (i + 1)),
+                    code: c.code || '',
+                    raw: c
+                }));
+
+                if (mapped.length > 0) {
+                    cachedPersonalizationConfigs = mapped;
+                    return mapped;
+                }
+            }
+        } catch (err) {}
+
+        const fallbackPresets = [
+            { id: "6a7b6512d77cfcad9c09f546", name: "Custom Apparel Personalization", code: "custom-apparel" },
+            { id: "6a8f2b36609b55d6ab469626", name: "Custom Hat", code: "custom-hat" },
+            { id: "6a8c077d82248306cfedae9a", name: "11oz & 15oz Mug Personalization - Black", code: "mug-black" },
+            { id: "6724a2c0f124a91bb4c00003", name: "Pet Portrait Artwork Config", code: "pet-portrait" },
+            { id: "6724a2c0f124a91bb4c00004", name: "Poster & Canvas Photo Print", code: "canvas-print" },
+            { id: "6724a2c0f124a91bb4c00006", name: "Holiday Ornament & Greeting Card", code: "ornament-holiday" }
+        ].map(item => ({ ...item, raw: item }));
+
+        return fallbackPresets;
+    }
+
+    /**
+     * Fetch Inkvibe Store Metadata (Categories, Collections, Tags, Sales Channels, Shipping Profiles)
+     */
+    async function fetchInkvibeMetadata() {
+        if (cachedInkvibeMetadata) return cachedInkvibeMetadata;
+
+        return new Promise((resolve) => {
+            chrome.runtime.sendMessage({ action: 'getInkvibeMetadata' }, (response) => {
+                if (response && response.success && response.data) {
+                    cachedInkvibeMetadata = response.data;
+                    cachedCategoriesList = response.data.categories || [];
+                    resolve(response.data);
+                } else {
+                    const fallback = {
+                        categories: [
+                            { id: "pcat_01M2FR96Z8QTGW71HQJG7GK4X7", name: "Apparel", parent_category_id: null, rank: 0 },
+                            { id: "pcat_01M2FR99DWS97R6FWHH2G71MG5", name: "Custom Shirts", parent_category_id: "pcat_01M2FR96Z8QTGW71HQJG7GK4X7", rank: 1 },
+                            { id: "pcat_01M2FR97BSND85NG6SHVF54YJ3", name: "Drinkware", parent_category_id: null, rank: 0 },
+                            { id: "pcat_01M2PSRRAE8486N75SSZDKHXNT", name: "Custom Mugs", parent_category_id: "pcat_01M2FR97BSND85NG6SHVF54YJ3", rank: 1 },
+                            { id: "pcat_01M2PSRRZD77D3N60XPAH6DK1W", name: "Custom Tumblers", parent_category_id: "pcat_01M2FR97BSND85NG6SHVF54YJ3", rank: 2 },
+                            { id: "pcat_01M2FR982ZYBRPXDC13XNVPVF9", name: "Accessories", parent_category_id: null, rank: 0 },
+                            { id: "pcat_01M2PSJW881KETDPD50GWMYGQY", name: "Cards", parent_category_id: null, rank: 0 },
+                            { id: "pcat_01M2PSNXR1N8CMRT431A3TQW41", name: "Custom Greeting Cards", parent_category_id: "pcat_01M2PSJW881KETDPD50GWMYGQY", rank: 1 },
+                            { id: "pcat_01M2PSRP7HKS06EQ02NSQGPTXE", name: "Home Decor", parent_category_id: null, rank: 0 },
+                            { id: "pcat_01M2PSRYV5FJ0Y2DCQ7E198M72", name: "Custom Ornaments", parent_category_id: "pcat_01M2PSRP7HKS06EQ02NSQGPTXE", rank: 1 }
+                        ],
+                        collections: [
+                            { id: "pcol_best_sellers", name: "Best Sellers", title: "Best Sellers" },
+                            { id: "pcol_valentine", name: "Valentine's Day", title: "Valentine's Day" },
+                            { id: "pcol_trending", name: "Trending Gifts", title: "Trending Gifts" },
+                            { id: "pcol_pet_lovers", name: "Pet Lovers", title: "Pet Lovers" }
+                        ],
+                        tags: [
+                            "t-shirt", "16vibe", "ecomlap", "Valentine's Day", "Pet Lovers",
+                            "Vintage", "Custom Shirts", "Custom Mugs", "Gift for Mom", "Gift for Dad"
+                        ],
+                        salesChannels: [
+                            { id: "sc_default", name: "Default Sales Channel" }
+                        ],
+                        shippingProfiles: [
+                            { id: "sp_default", name: "Default Shipping Profile" }
+                        ],
+                        productTypes: [
+                            { id: "pt_shirt", value: "Shirt" },
+                            { id: "pt_hoodie", value: "Hoodie" },
+                            { id: "pt_mug", value: "Mug" }
+                        ],
+                        vendors: [
+                            { id: "admin", name: "Admin", handle: "admin" },
+                            { id: "01M1C02AVPFY4GQBKZKNH4KVE2", name: "InkVibe Studio", handle: "inkvibe-studio" },
+                            { id: "01M1C02B3J6NWS1J39JVDV1AEV", name: "Urban Apparel", handle: "urban-apparel" }
+                        ],
+                        isLive: false
+                    };
+                    cachedInkvibeMetadata = fallback;
+                    cachedCategoriesList = fallback.categories;
+                    resolve(fallback);
+                }
+            });
+        });
+    }
+
+    /**
+     * Build Hierarchical Category Tree from flat category list
      */
     function buildCategoryTree(categories) {
         if (!Array.isArray(categories) || categories.length === 0) return [];
-        
-        const byId = new Map();
-        categories.forEach(c => byId.set(c.id, { ...c, children: [] }));
+
+        const idMap = new Map();
+        categories.forEach(c => {
+            idMap.set(c.id, {
+                ...c,
+                children: []
+            });
+        });
 
         const roots = [];
-        byId.forEach(item => {
-            if (item.parent_category_id && byId.has(item.parent_category_id)) {
-                byId.get(item.parent_category_id).children.push(item);
+        categories.forEach(c => {
+            const node = idMap.get(c.id);
+            if (c.parent_category_id && idMap.has(c.parent_category_id)) {
+                idMap.get(c.parent_category_id).children.push(node);
             } else {
-                roots.push(item);
+                roots.push(node);
             }
         });
 
-        const sortFn = (a, b) => (Number(a.rank || 0) - Number(b.rank || 0)) || a.name.localeCompare(b.name);
-        roots.sort(sortFn);
-        byId.forEach(item => item.children.sort(sortFn));
+        const sortNodes = (nodes) => {
+            nodes.sort((a, b) => {
+                if ((a.rank ?? 0) !== (b.rank ?? 0)) return (a.rank ?? 0) - (b.rank ?? 0);
+                return (a.name || '').localeCompare(b.name || '');
+            });
+            nodes.forEach(n => {
+                if (n.children && n.children.length > 0) {
+                    sortNodes(n.children);
+                }
+            });
+        };
+        sortNodes(roots);
 
-        const flattened = [];
-        function traverse(node, depth, pathSoFar, isLastChild, parentPrefixes) {
-            const currentPath = pathSoFar ? (pathSoFar + ' > ' + node.name) : node.name;
-            let prefix = '';
-            if (depth === 0) {
-                prefix = '📁 ';
-            } else {
-                prefix = parentPrefixes + (isLastChild ? '└── ' : '├── ') + '📄 ';
-            }
-
-            flattened.push({
+        const flattenedTree = [];
+        function traverse(node, level, prefix = '', path = []) {
+            const currentPath = [...path, node.name];
+            flattenedTree.push({
                 id: node.id,
                 name: node.name,
-                displayName: prefix + node.name,
-                fullPath: currentPath,
-                depth: depth
+                level: level,
+                prefix: prefix,
+                path: currentPath.join(' > '),
+                hasChildren: node.children && node.children.length > 0
             });
 
-            const nextPrefix = depth === 0 ? '　　' : parentPrefixes + (isLastChild ? '　　' : '│　');
-            node.children.forEach((child, idx) => {
-                const isLast = idx === node.children.length - 1;
-                traverse(child, depth + 1, currentPath, isLast, nextPrefix);
-            });
+            if (node.children && node.children.length > 0) {
+                node.children.forEach((child, idx) => {
+                    const isLast = idx === node.children.length - 1;
+                    const childPrefix = prefix + (level === 0 ? '　' : '│　') + (isLast ? '└── ' : '├── ');
+                    traverse(child, level + 1, childPrefix, currentPath);
+                });
+            }
         }
 
-        roots.forEach((root) => {
-            traverse(root, 0, '', false, '');
-        });
-
-        return flattened;
+        roots.forEach(r => traverse(r, 0, '', []));
+        return flattenedTree;
     }
 
     /**
-     * Build and inject Modal DOM
+     * Create Modal DOM
      */
     function createModalDom() {
-        if (modalElement && document.body.contains(modalElement)) return modalElement;
+        if (modalElement && document.body && document.body.contains(modalElement)) return modalElement;
 
-        injectModalStyles();
+        const existing = document.getElementById('vibe-link-16vibe-modal');
+        if (existing) {
+            modalElement = existing;
+            return existing;
+        }
 
         const overlay = document.createElement('div');
-        overlay.id = 'vibe-link-modal-root';
         overlay.className = 'vibe-link-modal-overlay';
+        overlay.id = 'vibe-link-16vibe-modal';
 
         overlay.innerHTML = `
             <div class="vibe-link-modal-dialog">
@@ -347,7 +624,7 @@
                     <div class="vibe-modal-title-wrap">
                         <div class="vibe-modal-title">
                             <span class="vibe-modal-title-icon">🔗</span>
-                            <span>Liên kết sản phẩm (Link 16vibe)</span>
+                            <span>Liên kết sản phẩm lên Medusa (Link 16vibe)</span>
                         </div>
                         <div class="vibe-modal-subtitle" id="vibe-modal-subtitle">
                             Cấu hình thông tin đồng bộ sản phẩm vào hệ thống Inkvibe
@@ -358,7 +635,7 @@
 
                 <!-- Body (2 Columns) -->
                 <div class="vibe-modal-body">
-                    <!-- Left Column: Thông tin sản phẩm -->
+                    <!-- Left Column: Thông tin sản phẩm & Nội dung -->
                     <div class="vibe-modal-col">
                         <div class="vibe-card">
                             <div class="vibe-card-title">📝 Thông tin & Nội dung sản phẩm</div>
@@ -367,7 +644,7 @@
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-personalization">
                                     <span>Cấu hình cá nhân hóa</span>
-                                    <span class="vibe-form-label-hint" id="vibe-hint-personalization-count">https://ecomlap.com/api/...</span>
+                                    <span class="vibe-form-label-hint" id="vibe-hint-personalization-count">ecomlap.com/api/...</span>
                                 </label>
                                 <div class="vibe-input-wrap-flex">
                                     <select class="vibe-select" id="vibe-select-personalization">
@@ -377,35 +654,10 @@
                                 </div>
                             </div>
 
-                            <!-- Tiêu đề sản phẩm -->
-                            <div class="vibe-form-group">
-                                <label class="vibe-form-label" for="vibe-input-title">
-                                    <span>Tiêu đề sản phẩm</span>
-                                    <span class="vibe-form-label-hint">Hỗ trợ biến động</span>
-                                </label>
-                                <input type="text" class="vibe-input vibe-track-focus" id="vibe-input-title" value="{{item_name}}" placeholder="Nhập tiêu đề sản phẩm...">
-                            </div>
-
-                            <!-- Đường dẫn / Handle -->
-                            <div class="vibe-form-group">
-                                <label class="vibe-form-label" for="vibe-input-handle">
-                                    <span>Đường dẫn (Handle / Slug)</span>
-                                </label>
-                                <input type="text" class="vibe-input vibe-track-focus" id="vibe-input-handle" value="{{item_name}}" placeholder="handle-san-pham">
-                            </div>
-
-                            <!-- Mô tả sản phẩm -->
-                            <div class="vibe-form-group">
-                                <label class="vibe-form-label" for="vibe-input-description">
-                                    <span>Mô tả sản phẩm</span>
-                                </label>
-                                <textarea class="vibe-textarea vibe-track-focus" id="vibe-input-description" rows="4">{{product_description}}</textarea>
-                            </div>
-
-                            <!-- Dynamic Placeholders Box -->
+                            <!-- Dynamic Placeholders Banner -->
                             <div class="vibe-placeholder-box">
                                 <div class="vibe-placeholder-header">
-                                    <span>✨ Nhấp để chèn biến nhanh vào ô đang nhập:</span>
+                                    <span>✨ Tiêu đề, Handle và Mô tả hỗ trợ các placeholder — tự động thay bằng dữ liệu từng sản phẩm:</span>
                                 </div>
                                 <div class="vibe-badges-container">
                                     <span class="vibe-badge-token" data-token="{{item_name}}">{{item_name}}</span>
@@ -417,70 +669,98 @@
                                     <span class="vibe-badge-token" data-token="{{property:key}}">{{property:key}}</span>
                                 </div>
                             </div>
+
+                            <!-- Tiêu đề sản phẩm -->
+                            <div class="vibe-form-group" style="margin-top: 12px;">
+                                <label class="vibe-form-label" for="vibe-input-title">
+                                    <span>Tiêu đề</span>
+                                </label>
+                                <input type="text" class="vibe-input vibe-track-focus" id="vibe-input-title" value="{{item_name}}" placeholder="Nhập tiêu đề sản phẩm...">
+                            </div>
+
+                            <!-- Đường dẫn / Handle -->
+                            <div class="vibe-form-group">
+                                <label class="vibe-form-label" for="vibe-input-handle">
+                                    <span>Handle</span>
+                                </label>
+                                <input type="text" class="vibe-input vibe-track-focus" id="vibe-input-handle" value="" placeholder="Để trống để tự sinh từ tiêu đề">
+                            </div>
+
+                            <!-- Nếu đã tồn tại (Upsert) -->
+                            <div class="vibe-checkbox-row">
+                                <label class="vibe-checkbox-label">
+                                    <input type="checkbox" id="vibe-chk-update-if-exists" checked>
+                                    <span>Cập nhật sản phẩm Medusa đã có thay vì báo lỗi</span>
+                                </label>
+                                <div class="vibe-field-desc">
+                                    Đối chiếu theo handle, nên sản phẩm tạo ngoài hmt cũng tìm thấy. Ghi đè toàn bộ: tiêu đề, mô tả, hình ảnh, tuỳ chọn, biến thể, giá và tồn kho.
+                                </div>
+                            </div>
+
+                            <!-- Mô tả sản phẩm -->
+                            <div class="vibe-form-group">
+                                <label class="vibe-form-label" for="vibe-input-description">
+                                    <span>Mô tả</span>
+                                </label>
+                                <textarea class="vibe-textarea vibe-track-focus" id="vibe-input-description" rows="3">{{product_description}}</textarea>
+                            </div>
                         </div>
 
-                        <!-- Card Media & Rules -->
+                        <!-- Card Media -->
                         <div class="vibe-card">
-                            <div class="vibe-card-title">🖼️ Hình ảnh & Giới hạn đơn hàng</div>
+                            <div class="vibe-card-title">🖼️ Hình ảnh sản phẩm</div>
 
+                            <!-- Hình ảnh bổ sung -->
                             <div class="vibe-form-group">
-                                <label class="vibe-form-label" for="vibe-select-thumbnail">Hình thu nhỏ (Thumbnail)</label>
-                                <select class="vibe-select" id="vibe-select-thumbnail">
-                                    <option value="main">Ảnh sản phẩm chính (Mặc định)</option>
-                                    <option value="first">Ảnh biến thể đầu tiên</option>
-                                    <option value="none">Không đặt hình thu nhỏ</option>
-                                </select>
+                                <label class="vibe-form-label" for="vibe-input-additional-images">
+                                    <span>Hình ảnh bổ sung</span>
+                                    <span class="vibe-form-label-hint">Tùy chọn</span>
+                                </label>
+                                <textarea class="vibe-textarea" id="vibe-input-additional-images" rows="2" placeholder="Mỗi URL một dòng, hoặc phân tách bằng dấu phẩy"></textarea>
                             </div>
 
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label">
-                                    <span>Hình ảnh sản phẩm được chọn (<span id="vibe-preview-img-count">0</span>)</span>
+                                    <span>Hình ảnh sản phẩm được chọn (<span id="vibe-preview-img-count">0</span> ảnh)</span>
                                 </label>
                                 <div class="vibe-img-preview-list" id="vibe-img-preview-container">
                                     <!-- Rendered dynamically -->
                                 </div>
                             </div>
-
-                            <div class="vibe-switch-row">
-                                <div class="vibe-switch-label-wrap">
-                                    <span class="vibe-switch-title">Sản phẩm có thể giảm giá</span>
-                                    <span class="vibe-switch-desc">Cho phép áp dụng mã khuyến mãi hoặc giảm giá</span>
-                                </div>
-                                <label class="vibe-switch">
-                                    <input type="checkbox" id="vibe-chk-discountable" checked>
-                                    <span class="vibe-switch-slider"></span>
-                                </label>
-                            </div>
-
-                            <div class="vibe-form-group" style="margin-top: 10px;">
-                                <label class="vibe-form-label" for="vibe-input-max-quantity">
-                                    <span>Số lượng tối đa trên đơn hàng</span>
-                                </label>
-                                <input type="number" class="vibe-input" id="vibe-input-max-quantity" value="100" min="1" max="9999">
-                            </div>
                         </div>
                     </div>
 
-                    <!-- Right Column: Thiết lập Inkvibe Store -->
+                    <!-- Right Column: Thiết lập Inkvibe Store, Giá & Biến thể -->
                     <div class="vibe-modal-col">
                         <div class="vibe-card">
-                            <div class="vibe-card-title">🏬 Cấu hình Inkvibe Store (Database Local)</div>
+                            <div class="vibe-card-title">🏬 Cấu hình Inkvibe Store</div>
 
                             <!-- Trạng thái sản phẩm -->
                             <div class="vibe-form-group">
-                                <label class="vibe-form-label" for="vibe-select-status">Trạng thái sản phẩm</label>
+                                <label class="vibe-form-label" for="vibe-select-status">Trạng thái</label>
                                 <select class="vibe-select" id="vibe-select-status">
-                                    <option value="published" selected>Xuất bản (Published)</option>
+                                    <option value="published" selected>Đã xuất bản (Published)</option>
                                     <option value="draft">Bản nháp (Draft)</option>
                                     <option value="proposed">Đề xuất (Proposed)</option>
                                 </select>
                             </div>
 
+                            <!-- Người bán (Vendor) -->
+                            <div class="vibe-form-group">
+                                <label class="vibe-form-label" for="vibe-select-vendor">
+                                    <span>Người bán (Vendor)</span>
+                                    <span class="vibe-form-label-hint">Mặc định: Admin</span>
+                                </label>
+                                <select class="vibe-select" id="vibe-select-vendor">
+                                    <option value="admin" selected>Admin (Chính sàn Inkvibe - Không hiển thị store)</option>
+                                </select>
+                                <div class="vibe-field-desc">Mặc định: Admin (sản phẩm của sàn, không hiển thị thẻ store/creator ở chi tiết sản phẩm).</div>
+                            </div>
+
                             <!-- Kênh bán hàng -->
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-sales-channel">
-                                    <span>Kênh bán hàng (Sales Channel)</span>
-                                    <span class="vibe-form-label-hint">Inkvibe DB</span>
+                                    <span>Kênh bán hàng</span>
                                 </label>
                                 <select class="vibe-select" id="vibe-select-sales-channel">
                                     <option value="">-- Đang tải kênh bán hàng... --</option>
@@ -490,8 +770,7 @@
                             <!-- Hồ sơ vận chuyển -->
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-shipping-profile">
-                                    <span>Hồ sơ vận chuyển (Shipping Profile)</span>
-                                    <span class="vibe-form-label-hint">Inkvibe DB</span>
+                                    <span>Hồ sơ vận chuyển</span>
                                 </label>
                                 <select class="vibe-select" id="vibe-select-shipping-profile">
                                     <option value="">-- Đang tải hồ sơ vận chuyển... --</option>
@@ -501,7 +780,7 @@
                             <!-- Danh mục sản phẩm (Hierarchical Tree Select) -->
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-category">
-                                    <span>Danh mục sản phẩm (Categories)</span>
+                                    <span>Danh mục sản phẩm</span>
                                     <span class="vibe-form-label-hint" id="vibe-hint-category-count">Dạng cây Inkvibe</span>
                                 </label>
                                 <select class="vibe-select" id="vibe-select-category" style="font-family: monospace, -apple-system, BlinkMacSystemFont, sans-serif;">
@@ -513,8 +792,7 @@
                             <!-- Bộ sưu tập -->
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-collection">
-                                    <span>Bộ sưu tập (Collections)</span>
-                                    <span class="vibe-form-label-hint" id="vibe-hint-collection-count">Inkvibe DB</span>
+                                    <span>Bộ sưu tập</span>
                                 </label>
                                 <select class="vibe-select" id="vibe-select-collection">
                                     <option value="">-- Đang tải bộ sưu tập... --</option>
@@ -523,46 +801,157 @@
 
                             <!-- Loại sản phẩm -->
                             <div class="vibe-form-group">
-                                <label class="vibe-form-label" for="vibe-input-type">Loại sản phẩm (Product Type)</label>
-                                <input type="text" class="vibe-input" id="vibe-input-type" value="Shirt" placeholder="Ví dụ: Shirt, Hoodie, Poster...">
+                                <label class="vibe-form-label" for="vibe-input-type">Loại sản phẩm</label>
+                                <input type="text" class="vibe-input" id="vibe-input-type" value="Shirt" placeholder="Ví dụ: Shirt, Hoodie...">
                             </div>
 
-                            <!-- Thẻ phân loại (Tags) + Inkvibe Suggested Tags -->
-                            <div class="vibe-form-group">
+                            <!-- Giá cơ bản & Tiền tệ -->
+                            <div class="vibe-form-group-row">
+                                <div class="vibe-form-group" style="flex: 1;">
+                                    <label class="vibe-form-label" for="vibe-input-base-price">Giá cơ bản</label>
+                                    <input type="number" class="vibe-input" id="vibe-input-base-price" value="23.95" step="0.01" min="0">
+                                    <div class="vibe-field-desc" style="padding-left: 0;">Đây là giá của sản phẩm.</div>
+                                </div>
+                                <div class="vibe-form-group" style="flex: 1;">
+                                    <label class="vibe-form-label" for="vibe-select-currency">Tiền tệ</label>
+                                    <select class="vibe-select" id="vibe-select-currency">
+                                        <option value="usd" selected>USD (mặc định của store)</option>
+                                        <option value="vnd">VND</option>
+                                        <option value="eur">EUR</option>
+                                    </select>
+                                </div>
+                            </div>
+
+                            <!-- Tồn kho -->
+                            <div class="vibe-checkbox-row">
+                                <label class="vibe-checkbox-label">
+                                    <input type="checkbox" id="vibe-chk-track-inventory">
+                                    <span>Theo dõi tồn kho và đặt số lượng</span>
+                                </label>
+                                <div class="vibe-field-desc">Tắt: biến thể không bị theo dõi tồn kho và luôn mua được.</div>
+                            </div>
+
+
+
+                            <!-- Thẻ phân loại (Tags) -->
+                            <div class="vibe-form-group" style="margin-top: 10px;">
                                 <label class="vibe-form-label" for="vibe-input-tags">
                                     <span>Thẻ phân loại (Tags)</span>
                                     <span class="vibe-form-label-hint">Phân cách bằng dấu phẩy</span>
                                 </label>
                                 <input type="text" class="vibe-input" id="vibe-input-tags" value="t-shirt, 16vibe, ecomlap" placeholder="Cách nhau bằng dấu phẩy...">
                                 
-                                <!-- Inkvibe Tags Container -->
                                 <div style="margin-top: 8px;">
                                     <div style="font-size: 11px; font-weight: 600; color: #475569; margin-bottom: 5px; display: flex; align-items: center; justify-content: space-between;">
                                         <span>🏷️ Gợi ý thẻ từ Inkvibe (Click để thêm):</span>
                                         <span id="vibe-tags-count-label" style="color: #94a3b8; font-weight: 400;">0 thẻ</span>
                                     </div>
-                                    <div class="vibe-badges-container" id="vibe-inkvibe-tags-list" style="max-height: 90px; overflow-y: auto; padding: 4px 0;">
+                                    <div class="vibe-badges-container" id="vibe-inkvibe-tags-list" style="max-height: 80px; overflow-y: auto; padding: 2px 0;">
                                         <!-- Inkvibe tags rendered dynamically -->
                                     </div>
                                 </div>
                             </div>
+                        </div>
+                    </div>
 
-                            <!-- Biến thể mặc định -->
-                            <div class="vibe-switch-row" style="margin-top: 10px;">
-                                <div class="vibe-switch-label-wrap">
-                                    <span class="vibe-switch-title">Tạo biến thể mặc định (Variants)</span>
-                                    <span class="vibe-switch-desc">Tự động cấu hình biến thể Size & Color</span>
+                    <!-- Full-Width: Quản lý Biến thể (Variants) -->
+                    <div class="vibe-card vibe-variants-card" style="grid-column: 1 / -1;">
+                        <div class="vibe-card-title">🧩 Biến thể sản phẩm (Variants)</div>
+
+                        <!-- Checkbox 1: Bán như sản phẩm đơn -->
+                        <div class="vibe-checkbox-row">
+                            <label class="vibe-checkbox-label">
+                                <input type="checkbox" id="vibe-chk-single-product">
+                                <span>Bán như một sản phẩm đơn (bỏ biến thể)</span>
+                            </label>
+                            <div class="vibe-field-desc">Sản phẩm lên Medusa dưới dạng một mặt hàng duy nhất, không có tuỳ chọn (1 giá cố định). Nếu chọn cấu hình cá nhân hóa ở trên, trang chi tiết sản phẩm trên Storefront sẽ tự động hiển thị nút và Modal Customize.</div>
+                        </div>
+
+                        <!-- Checkbox 2: Tạo lại biến thể -->
+                        <div class="vibe-checkbox-row" style="margin-top: 10px;">
+                            <label class="vibe-checkbox-label">
+                                <input type="checkbox" id="vibe-chk-recreate-variants" checked>
+                                <span>Tạo lại biến thể</span>
+                            </label>
+                            <div class="vibe-field-desc">Áp cho tất cả sản phẩm đã chọn: cùng màu, kích thước, giá và số lượng. Mỗi sản phẩm chỉ khác nhau ở SKU riêng của nó.</div>
+                        </div>
+
+                        <!-- Khối tạo ma trận biến thể ("Tạo lại biến thể") -->
+                        <div class="vibe-variant-builder-box" id="vibe-variant-builder-box">
+                            <div class="vibe-variant-matrix-cols">
+                                <!-- Cột Màu sắc -->
+                                <div class="vibe-variant-matrix-col">
+                                    <div class="vibe-matrix-col-header">
+                                        <span>Màu sắc</span>
+                                        <button type="button" class="vibe-btn-mini" id="vibe-btn-add-color">Thêm</button>
+                                    </div>
+                                    <div class="vibe-matrix-items-list" id="vibe-matrix-color-list"></div>
                                 </div>
-                                <label class="vibe-switch">
-                                    <input type="checkbox" id="vibe-chk-create-variants" checked>
-                                    <span class="vibe-switch-slider"></span>
-                                </label>
+
+                                <!-- Cột Kích thước -->
+                                <div class="vibe-variant-matrix-col">
+                                    <div class="vibe-matrix-col-header">
+                                        <span>Kích thước</span>
+                                        <button type="button" class="vibe-btn-mini" id="vibe-btn-add-size">Thêm</button>
+                                    </div>
+                                    <div class="vibe-matrix-items-list" id="vibe-matrix-size-list"></div>
+                                </div>
+                            </div>
+
+                            <!-- Matrix Actions -->
+                            <div class="vibe-matrix-actions-row">
+                                <button type="button" class="vibe-btn-matrix-primary" id="vibe-btn-generate-matrix">
+                                    <span>⚙️ Tạo biến thể (<span id="vibe-matrix-count">6</span>)</span>
+                                </button>
+                                <button type="button" class="vibe-btn-matrix-secondary" id="vibe-btn-recalc-price">
+                                    <span>Tính lại giá</span>
+                                </button>
+                            </div>
+
+                            <!-- Explanatory Notes -->
+                            <div class="vibe-matrix-notes">
+                                <div>Giá = giá mặc định + giá cộng thêm của màu + của kích thước.</div>
+                                <div>SKU tự sinh cho từng sản phẩm: SKU của chính nó + kích thước + màu. ví dụ <code class="vibe-sku-pill">PN-T1FR-8C3G-Small-Black</code></div>
+                                <div>Tính lại giá giữ nguyên các dòng, chỉ tính lại giá.</div>
+                            </div>
+                        </div>
+
+                        <!-- Bảng danh sách biến thể tùy chỉnh -->
+                        <div class="vibe-variants-table-section" id="vibe-variants-table-section">
+                            <!-- Toolbar -->
+                            <div class="vibe-variants-toolbar">
+                                <button type="button" class="vibe-btn-tool" id="vibe-btn-reload-orig-variants">Tải lại từ sản phẩm gốc</button>
+                                <button type="button" class="vibe-btn-tool" id="vibe-btn-add-custom-variant">Thêm biến thể</button>
+                                <button type="button" class="vibe-btn-tool" id="vibe-btn-add-custom-option">Thêm tuỳ chọn</button>
+                            </div>
+
+                            <!-- Table Container -->
+                            <div class="vibe-variants-table-container">
+                                <table class="vibe-variants-table" id="vibe-variants-table">
+                                    <thead id="vibe-variants-thead"></thead>
+                                    <tbody id="vibe-variants-tbody"></tbody>
+                                </table>
+                            </div>
+
+                            <!-- Batch Price Bar -->
+                            <div class="vibe-batch-price-row">
+                                <input type="number" class="vibe-batch-price-input" id="vibe-input-batch-price" placeholder="Giá" step="0.01" min="0">
+                                <button type="button" class="vibe-btn-batch-apply" id="vibe-btn-apply-batch-price">Áp dụng cho tất cả</button>
                             </div>
                         </div>
                     </div>
                 </div>
 
-                <!-- Footer -->
+                <!-- Footer Sync All Box -->
+                <div class="vibe-sync-all-wrap">
+                    <label class="vibe-checkbox-label">
+                        <input type="checkbox" id="vibe-chk-sync-all">
+                        <span>Tiếp tục cho đến khi link hết sản phẩm</span>
+                    </label>
+                    <div class="vibe-field-desc">Link những sản phẩm bạn đã chọn, rồi tiếp tục tải thêm theo đúng bộ lọc hiện tại và link tiếp, cho đến khi không còn gì. Từ lượt thứ hai trở đi hệ thống chọn TẤT CẢ sản phẩm trên trang, không chỉ vài cái.</div>
+                </div>
+
+                <!-- Footer Actions -->
                 <div class="vibe-modal-footer">
                     <div class="vibe-footer-status">
                         <span class="vibe-status-pill" id="vibe-inkvibe-status">🟢 Inkvibe: localhost:9000</span>
@@ -633,6 +1022,59 @@
             setTimeout(() => { btn.style.transform = 'none'; }, 400);
         });
 
+        // Variant Builder & Matrix Events
+        overlay.querySelector('#vibe-btn-add-color')?.addEventListener('click', () => {
+            matrixColors.push({ name: '', extra: 0 });
+            renderMatrixLists();
+        });
+
+        overlay.querySelector('#vibe-btn-add-size')?.addEventListener('click', () => {
+            matrixSizes.push({ name: '', extra: 0 });
+            renderMatrixLists();
+        });
+
+        overlay.querySelector('#vibe-btn-generate-matrix')?.addEventListener('click', generateVariantsFromMatrix);
+        overlay.querySelector('#vibe-btn-recalc-price')?.addEventListener('click', recalculateVariantPrices);
+
+        overlay.querySelector('#vibe-btn-reload-orig-variants')?.addEventListener('click', reloadFromOriginalProduct);
+        overlay.querySelector('#vibe-btn-add-custom-variant')?.addEventListener('click', addCustomVariantRow);
+        overlay.querySelector('#vibe-btn-add-custom-option')?.addEventListener('click', addCustomOptionColumn);
+        overlay.querySelector('#vibe-btn-apply-batch-price')?.addEventListener('click', applyBatchPrice);
+
+        // Checkbox toggles
+        const chkSingle = overlay.querySelector('#vibe-chk-single-product');
+        const chkRecreate = overlay.querySelector('#vibe-chk-recreate-variants');
+        const builderBox = overlay.querySelector('#vibe-variant-builder-box');
+        const tableSection = overlay.querySelector('#vibe-variants-table-section');
+
+        function updateVariantsVisibility() {
+            const isSingle = chkSingle && chkSingle.checked;
+            const isRecreate = chkRecreate && chkRecreate.checked;
+
+            if (isSingle) {
+                if (chkRecreate) chkRecreate.checked = false;
+                if (builderBox) builderBox.style.display = 'none';
+                if (tableSection) tableSection.style.display = 'none';
+            } else {
+                if (builderBox) builderBox.style.display = isRecreate ? 'block' : 'none';
+                if (tableSection) tableSection.style.display = 'block';
+            }
+        }
+
+        chkSingle?.addEventListener('change', () => {
+            if (chkSingle.checked && chkRecreate) {
+                chkRecreate.checked = false;
+            }
+            updateVariantsVisibility();
+        });
+
+        chkRecreate?.addEventListener('change', () => {
+            if (chkRecreate.checked && chkSingle) {
+                chkSingle.checked = false;
+            }
+            updateVariantsVisibility();
+        });
+
         // Submit link
         overlay.querySelector('#vibe-btn-submit-link').addEventListener('click', handleLinkSubmit);
     }
@@ -652,6 +1094,344 @@
         target.selectionStart = target.selectionEnd = start + token.length;
         target.focus();
     }
+
+    /**
+     * Render the 2-column matrix lists (Color & Size)
+     */
+    function renderMatrixLists() {
+        const colorList = document.getElementById('vibe-matrix-color-list');
+        const sizeList = document.getElementById('vibe-matrix-size-list');
+        const countSpan = document.getElementById('vibe-matrix-count');
+
+        if (countSpan) {
+            const count = matrixColors.length * matrixSizes.length;
+            countSpan.textContent = count > 0 ? count : 0;
+        }
+
+        if (colorList) {
+            colorList.innerHTML = '';
+            matrixColors.forEach((item, idx) => {
+                const row = document.createElement('div');
+                row.className = 'vibe-matrix-item-row';
+                row.innerHTML = `
+                    <input type="text" class="vibe-matrix-name-input" value="${item.name || ''}" placeholder="Tên màu">
+                    <input type="number" step="0.01" class="vibe-matrix-extra-price-input" value="${item.extra !== undefined && item.extra !== null ? item.extra : ''}" placeholder="Giá cộng thêm cho màu">
+                    <button type="button" class="vibe-btn-remove-row" title="Xóa">✕</button>
+                `;
+
+                const nameInput = row.querySelector('.vibe-matrix-name-input');
+                const extraInput = row.querySelector('.vibe-matrix-extra-price-input');
+                const removeBtn = row.querySelector('.vibe-btn-remove-row');
+
+                nameInput.addEventListener('input', () => {
+                    item.name = nameInput.value.trim();
+                });
+                extraInput.addEventListener('input', () => {
+                    item.extra = parseFloat(extraInput.value) || 0;
+                });
+                removeBtn.addEventListener('click', () => {
+                    matrixColors.splice(idx, 1);
+                    renderMatrixLists();
+                });
+
+                colorList.appendChild(row);
+            });
+        }
+
+        if (sizeList) {
+            sizeList.innerHTML = '';
+            matrixSizes.forEach((item, idx) => {
+                const row = document.createElement('div');
+                row.className = 'vibe-matrix-item-row';
+                row.innerHTML = `
+                    <input type="text" class="vibe-matrix-name-input" value="${item.name || ''}" placeholder="Tên kích thước">
+                    <input type="number" step="0.01" class="vibe-matrix-extra-price-input" value="${item.extra !== undefined && item.extra !== null ? item.extra : ''}" placeholder="Giá cộng thêm cho kích thước">
+                    <button type="button" class="vibe-btn-remove-row" title="Xóa">✕</button>
+                `;
+
+                const nameInput = row.querySelector('.vibe-matrix-name-input');
+                const extraInput = row.querySelector('.vibe-matrix-extra-price-input');
+                const removeBtn = row.querySelector('.vibe-btn-remove-row');
+
+                nameInput.addEventListener('input', () => {
+                    item.name = nameInput.value.trim();
+                });
+                extraInput.addEventListener('input', () => {
+                    item.extra = parseFloat(extraInput.value) || 0;
+                });
+                removeBtn.addEventListener('click', () => {
+                    matrixSizes.splice(idx, 1);
+                    renderMatrixLists();
+                });
+
+                sizeList.appendChild(row);
+            });
+        }
+    }
+
+    /**
+     * Render the custom variants table
+     */
+    function renderVariantsTable() {
+        const thead = document.getElementById('vibe-variants-thead');
+        const tbody = document.getElementById('vibe-variants-tbody');
+        if (!thead || !tbody) return;
+
+        // Render Table Header
+        thead.innerHTML = '';
+        const headerTr = document.createElement('tr');
+
+        tableOptionTitles.forEach((title, optIdx) => {
+            const th = document.createElement('th');
+            th.innerHTML = `
+                <div class="vibe-table-header-input-wrap">
+                    <input type="text" class="vibe-table-header-input" value="${title}">
+                    <button type="button" class="vibe-btn-remove-row" style="width:20px;height:22px;font-size:10px;" title="Xóa cột">✕</button>
+                </div>
+            `;
+
+            const input = th.querySelector('.vibe-table-header-input');
+            const removeBtn = th.querySelector('.vibe-btn-remove-row');
+
+            input.addEventListener('change', () => {
+                const oldTitle = tableOptionTitles[optIdx];
+                const newTitle = input.value.trim() || ('Option ' + (optIdx + 1));
+                tableOptionTitles[optIdx] = newTitle;
+                // Update keys in tableVariants
+                tableVariants.forEach(v => {
+                    if (v[oldTitle] !== undefined) {
+                        v[newTitle] = v[oldTitle];
+                        delete v[oldTitle];
+                    }
+                });
+                renderVariantsTable();
+            });
+
+            removeBtn.addEventListener('click', () => {
+                if (tableOptionTitles.length <= 1) {
+                    showToast('Phải giữ lại ít nhất 1 cột thuộc tính!', 'error');
+                    return;
+                }
+                const removedKey = tableOptionTitles[optIdx];
+                tableOptionTitles.splice(optIdx, 1);
+                tableVariants.forEach(v => { delete v[removedKey]; });
+                renderVariantsTable();
+            });
+
+            headerTr.appendChild(th);
+        });
+
+        // Price header
+        const priceTh = document.createElement('th');
+        priceTh.style.width = '120px';
+        priceTh.textContent = 'Giá';
+        headerTr.appendChild(priceTh);
+
+        // Actions header
+        const actionTh = document.createElement('th');
+        actionTh.style.width = '36px';
+        headerTr.appendChild(actionTh);
+
+        thead.appendChild(headerTr);
+
+        // Render Table Body
+        tbody.innerHTML = '';
+        tableVariants.forEach((v, rIdx) => {
+            const tr = document.createElement('tr');
+
+            tableOptionTitles.forEach(optTitle => {
+                const td = document.createElement('td');
+                const val = v[optTitle] !== undefined ? v[optTitle] : '';
+                const input = document.createElement('input');
+                input.type = 'text';
+                input.className = 'vibe-table-cell-input';
+                input.value = val;
+                input.addEventListener('input', () => {
+                    v[optTitle] = input.value;
+                });
+                td.appendChild(input);
+                tr.appendChild(td);
+            });
+
+            // Price column
+            const priceTd = document.createElement('td');
+            const priceInput = document.createElement('input');
+            priceInput.type = 'number';
+            priceInput.step = '0.01';
+            priceInput.className = 'vibe-table-price-input';
+            priceInput.value = v.price !== undefined ? v.price : '29.95';
+            priceInput.addEventListener('input', () => {
+                v.price = parseFloat(priceInput.value) || 0;
+            });
+            priceTd.appendChild(priceInput);
+            tr.appendChild(priceTd);
+
+            // Delete action column
+            const actionTd = document.createElement('td');
+            const deleteBtn = document.createElement('button');
+            deleteBtn.type = 'button';
+            deleteBtn.className = 'vibe-btn-remove-row';
+            deleteBtn.textContent = '✕';
+            deleteBtn.title = 'Xóa biến thể này';
+            deleteBtn.addEventListener('click', () => {
+                tableVariants.splice(rIdx, 1);
+                renderVariantsTable();
+            });
+            actionTd.appendChild(deleteBtn);
+            tr.appendChild(actionTd);
+
+            tbody.appendChild(tr);
+        });
+    }
+
+    /**
+     * Generate Cartesian Product Variants from Color & Size matrix
+     */
+    function generateVariantsFromMatrix() {
+        const basePrice = parseFloat(document.getElementById('vibe-input-base-price')?.value || '23.95') || 23.95;
+        const validColors = matrixColors.filter(c => c.name && c.name.trim());
+        const validSizes = matrixSizes.filter(s => s.name && s.name.trim());
+
+        if (validColors.length === 0 || validSizes.length === 0) {
+            showToast('Vui lòng nhập ít nhất 1 màu và 1 kích thước để tạo biến thể!', 'error');
+            return;
+        }
+
+        tableOptionTitles = ['Color', 'Size'];
+        const newVariants = [];
+
+        validColors.forEach(c => {
+            validSizes.forEach(s => {
+                const extra = (parseFloat(c.extra) || 0) + (parseFloat(s.extra) || 0);
+                const finalPrice = parseFloat((basePrice + extra).toFixed(2));
+                newVariants.push({
+                    Color: c.name.trim(),
+                    Size: s.name.trim(),
+                    price: finalPrice
+                });
+            });
+        });
+
+        tableVariants = newVariants;
+        renderVariantsTable();
+        showToast('Đã tạo thành công ' + tableVariants.length + ' biến thể từ ma trận!', 'success');
+    }
+
+    /**
+     * Recalculate price column without recreating rows
+     */
+    function recalculateVariantPrices() {
+        const basePrice = parseFloat(document.getElementById('vibe-input-base-price')?.value || '23.95') || 23.95;
+        const colorMap = new Map(matrixColors.map(c => [c.name.trim().toLowerCase(), parseFloat(c.extra) || 0]));
+        const sizeMap = new Map(matrixSizes.map(s => [s.name.trim().toLowerCase(), parseFloat(s.extra) || 0]));
+
+        tableVariants.forEach(v => {
+            let extra = 0;
+            if (v.Color && colorMap.has(v.Color.trim().toLowerCase())) {
+                extra += colorMap.get(v.Color.trim().toLowerCase());
+            }
+            if (v.Size && sizeMap.has(v.Size.trim().toLowerCase())) {
+                extra += sizeMap.get(v.Size.trim().toLowerCase());
+            }
+            v.price = parseFloat((basePrice + extra).toFixed(2));
+        });
+
+        renderVariantsTable();
+        showToast('Đã tính lại giá cho toàn bộ ' + tableVariants.length + ' dòng biến thể!', 'success');
+    }
+
+    /**
+     * Add a custom option column to table
+     */
+    function addCustomOptionColumn() {
+        const optionName = prompt('Nhập tên tùy chọn mới (ví dụ: Material, Style, Fit...):', 'Material');
+        if (!optionName || !optionName.trim()) return;
+
+        const cleanName = optionName.trim();
+        if (tableOptionTitles.includes(cleanName)) {
+            showToast('Tùy chọn "' + cleanName + '" đã tồn tại!', 'error');
+            return;
+        }
+
+        tableOptionTitles.push(cleanName);
+        tableVariants.forEach(v => {
+            v[cleanName] = 'Default';
+        });
+
+        renderVariantsTable();
+        showToast('Đã thêm cột tùy chọn "' + cleanName + '" vào bảng biến thể!', 'success');
+    }
+
+    /**
+     * Add an empty custom variant row
+     */
+    function addCustomVariantRow() {
+        const basePrice = parseFloat(document.getElementById('vibe-input-base-price')?.value || '23.95') || 23.95;
+        const newRow = {};
+        tableOptionTitles.forEach((opt, idx) => {
+            if (opt.toLowerCase() === 'color' && matrixColors[0]) {
+                newRow[opt] = matrixColors[0].name || 'Black';
+            } else if (opt.toLowerCase() === 'size' && matrixSizes[0]) {
+                newRow[opt] = matrixSizes[0].name || 'Small';
+            } else {
+                newRow[opt] = 'Option ' + (idx + 1);
+            }
+        });
+        newRow.price = basePrice;
+        tableVariants.push(newRow);
+        renderVariantsTable();
+    }
+
+    /**
+     * Batch apply price to all variant rows
+     */
+    function applyBatchPrice() {
+        const input = document.getElementById('vibe-input-batch-price');
+        const val = parseFloat(input?.value);
+        if (isNaN(val) || val < 0) {
+            showToast('Vui lòng nhập giá hợp lệ!', 'error');
+            return;
+        }
+
+        tableVariants.forEach(v => {
+            v.price = parseFloat(val.toFixed(2));
+        });
+
+        renderVariantsTable();
+        showToast('Đã áp dụng giá ' + val.toFixed(2) + ' cho toàn bộ biến thể!', 'success');
+    }
+
+    /**
+     * Reload variants from original product
+     */
+    function reloadFromOriginalProduct() {
+        const firstProd = currentSelectedProducts[0] || {};
+        if (Array.isArray(firstProd.variants) && firstProd.variants.length > 0) {
+            const rawVars = firstProd.variants;
+            const titlesSet = new Set();
+            rawVars.forEach(v => {
+                if (v.options && typeof v.options === 'object') {
+                    Object.keys(v.options).forEach(k => titlesSet.add(k));
+                }
+            });
+
+            if (titlesSet.size > 0) {
+                tableOptionTitles = Array.from(titlesSet);
+                tableVariants = rawVars.map(v => {
+                    const row = { ...(v.options || {}) };
+                    row.price = parseFloat(v.price || v.amount || 23.95);
+                    return row;
+                });
+                renderVariantsTable();
+                showToast('Đã tải lại ' + tableVariants.length + ' biến thể từ sản phẩm gốc!', 'success');
+                return;
+            }
+        }
+
+        // Fallback to regenerating from matrix
+        generateVariantsFromMatrix();
+    }
+
 
     /**
      * Populate Personalization configs dropdown with real items
@@ -680,8 +1460,6 @@
             if (idx === 0) opt.selected = true;
             select.appendChild(opt);
         });
-
-        console.log('[16vibe] Dropdown đã nạp thành công ' + list.length + ' cấu hình cá nhân hóa thật.');
     }
 
     /**
@@ -689,6 +1467,27 @@
      */
     async function loadInkvibeMetadataDropdowns() {
         const data = await fetchInkvibeMetadata();
+
+        // 0. Vendors (Default: Admin)
+        const vendorSelect = document.getElementById('vibe-select-vendor');
+        if (vendorSelect) {
+            vendorSelect.innerHTML = '';
+            const adminOpt = document.createElement('option');
+            adminOpt.value = 'admin';
+            adminOpt.textContent = 'Admin (Chính sàn Inkvibe - Không hiển thị store)';
+            adminOpt.selected = true;
+            vendorSelect.appendChild(adminOpt);
+
+            if (Array.isArray(data.vendors)) {
+                data.vendors.forEach(v => {
+                    if (v.handle === 'admin' || v.id === 'admin') return;
+                    const opt = document.createElement('option');
+                    opt.value = v.id;
+                    opt.textContent = (v.name || v.handle) + ' (@' + (v.handle || '') + ')';
+                    vendorSelect.appendChild(opt);
+                });
+            }
+        }
 
         // 1. Sales Channels
         const scSelect = document.getElementById('vibe-select-sales-channel');
@@ -716,59 +1515,63 @@
             });
         }
 
-        // 3. Product Categories - Render HIERARCHICAL TREE SELECT
+        // 3. Hierarchical Categories Tree
         const catSelect = document.getElementById('vibe-select-category');
+        const pathIndicator = document.getElementById('vibe-category-path-indicator');
         const catHint = document.getElementById('vibe-hint-category-count');
-        const catPathIndicator = document.getElementById('vibe-category-path-indicator');
-        if (catSelect && Array.isArray(data.categories)) {
+
+        if (catSelect && data.categories) {
             catSelect.innerHTML = '';
-            const tree = buildCategoryTree(data.categories);
-            if (catHint) catHint.textContent = data.categories.length + ' danh mục (Dạng cây)';
-            
-            tree.forEach((item, idx) => {
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '-- Chọn danh mục sản phẩm (hoặc để trống) --';
+            catSelect.appendChild(emptyOpt);
+
+            const treeNodes = buildCategoryTree(data.categories);
+            if (catHint) catHint.textContent = treeNodes.length + ' danh mục dạng cây';
+
+            treeNodes.forEach(node => {
                 const opt = document.createElement('option');
-                opt.value = item.id;
-                opt.textContent = item.displayName;
-                opt.setAttribute('data-path', item.fullPath);
-                if (idx === 0) opt.selected = true;
+                opt.value = node.id;
+                opt.setAttribute('data-path', node.path);
+
+                if (node.level === 0) {
+                    opt.textContent = '📁 ' + node.name;
+                    opt.style.fontWeight = 'bold';
+                } else {
+                    opt.textContent = node.prefix + '📄 ' + node.name;
+                }
                 catSelect.appendChild(opt);
             });
 
-            // Update path indicator on selection change
-            function updateCategoryPathDisplay() {
-                if (!catSelect || !catPathIndicator) return;
+            // Update Breadcrumb path indicator on change
+            catSelect.addEventListener('change', () => {
                 const selectedOpt = catSelect.options[catSelect.selectedIndex];
-                if (selectedOpt) {
-                    const fullPath = selectedOpt.getAttribute('data-path');
-                    if (fullPath && fullPath.includes('>')) {
-                        catPathIndicator.textContent = '📁 Đường dẫn: ' + fullPath;
-                        catPathIndicator.style.display = 'block';
-                    } else if (fullPath) {
-                        catPathIndicator.textContent = '📁 Danh mục gốc: ' + fullPath;
-                        catPathIndicator.style.display = 'block';
+                const fullPath = selectedOpt ? selectedOpt.getAttribute('data-path') : '';
+                if (pathIndicator) {
+                    if (fullPath) {
+                        pathIndicator.style.display = 'block';
+                        pathIndicator.textContent = '📁 Đường dẫn: ' + fullPath;
                     } else {
-                        catPathIndicator.style.display = 'none';
+                        pathIndicator.style.display = 'none';
                     }
                 }
-            }
-
-            catSelect.removeEventListener('change', updateCategoryPathDisplay);
-            catSelect.addEventListener('change', updateCategoryPathDisplay);
-            updateCategoryPathDisplay();
+            });
         }
 
-        // 4. Collections - Render ALL collections
+        // 4. Collections
         const colSelect = document.getElementById('vibe-select-collection');
-        const colHint = document.getElementById('vibe-hint-collection-count');
-        if (colSelect && Array.isArray(data.collections)) {
+        if (colSelect && data.collections) {
             colSelect.innerHTML = '';
-            if (colHint) colHint.textContent = data.collections.length + ' bộ sưu tập từ Inkvibe';
+            const emptyOpt = document.createElement('option');
+            emptyOpt.value = '';
+            emptyOpt.textContent = '-- Chọn bộ sưu tập (hoặc để trống) --';
+            colSelect.appendChild(emptyOpt);
 
-            data.collections.forEach((col, idx) => {
+            data.collections.forEach(col => {
                 const opt = document.createElement('option');
                 opt.value = col.id;
-                opt.textContent = col.title || col.name || col.handle || col.id;
-                if (idx === 0) opt.selected = true;
+                opt.textContent = col.title || col.name || col.id;
                 colSelect.appendChild(opt);
             });
         }
@@ -778,15 +1581,11 @@
         const tagsCountLabel = document.getElementById('vibe-tags-count-label');
         if (tagsContainer && Array.isArray(data.tags)) {
             tagsContainer.innerHTML = '';
-            if (tagsCountLabel) tagsCountLabel.textContent = data.tags.length + ' thẻ Inkvibe';
+            if (tagsCountLabel) tagsCountLabel.textContent = data.tags.length + ' thẻ';
 
             data.tags.forEach(tag => {
                 const badge = document.createElement('span');
-                badge.className = 'vibe-badge-token';
-                badge.style.cursor = 'pointer';
-                badge.style.borderColor = '#93c5fd';
-                badge.style.backgroundColor = '#f0f9ff';
-                badge.title = 'Nhấp để thêm thẻ "' + tag + '" vào sản phẩm';
+                badge.className = 'vibe-badge-tag';
                 badge.textContent = '+ ' + tag;
                 badge.addEventListener('click', () => {
                     appendTagToInput(tag);
@@ -794,8 +1593,8 @@
                     badge.style.borderColor = '#86efac';
                     badge.textContent = '✓ ' + tag;
                     setTimeout(() => {
-                        badge.style.backgroundColor = '#f0f9ff';
-                        badge.style.borderColor = '#93c5fd';
+                        badge.style.backgroundColor = '#f0fdf4';
+                        badge.style.borderColor = '#86efac';
                         badge.textContent = '+ ' + tag;
                     }, 1200);
                 });
@@ -810,8 +1609,8 @@
                 statusPill.className = 'vibe-status-pill';
                 statusPill.textContent = '🟢 Inkvibe Live (' + (data.categories?.length || 0) + ' cats, ' + (data.collections?.length || 0) + ' cols)';
             } else {
-                statusPill.className = 'vibe-status-pill warning';
-                statusPill.textContent = '🟡 Inkvibe Local: Ready';
+                statusPill.className = 'vibe-status-pill';
+                statusPill.textContent = '🟢 Inkvibe Local: Ready';
             }
         }
     }
@@ -827,45 +1626,99 @@
         container.innerHTML = '';
         let totalImgs = 0;
 
-        products.forEach(p => {
-            const imgUrl = p.main_image_url || p.image_url || p.thumbnail;
-            if (imgUrl) {
-                totalImgs++;
-                const item = document.createElement('div');
-                item.className = 'vibe-img-preview-item';
-                item.title = p.name || p.title || '';
-                item.innerHTML = '<img src="' + imgUrl + '" alt="" loading="lazy" onerror="this.src=\'data:image/svg+xml;utf8,<svg xmlns=\\\'http://www.w3.org/2000/svg\\\' width=\\\'' + 50 + '\\\' height=\\\'' + 50 + '\\\'><rect width=\\\'' + 50 + '\\\' height=\\\'' + 50 + '\\\'><rect width=\\\'' + 50 + '\\\' height=\\\'' + 50 + '\\\' fill=\\\'%23f1f5f9\\\'/></svg>\'">';
-                container.appendChild(item);
-            }
-        });
+        // Retrieve linked products map from storage
+        chrome.storage.local.get(['linked_products_map'], (st) => {
+            const linkedMap = (st && st.linked_products_map && typeof st.linked_products_map === 'object') ? st.linked_products_map : {};
 
-        if (countEl) countEl.textContent = totalImgs;
+            products.forEach((p, idx) => {
+                const raw = p.raw || p;
+                const imgUrl = raw.main_image_url || raw.main_image || p.main_image_url || p.image_url;
+                if (imgUrl) {
+                    totalImgs++;
+                    const item = document.createElement('div');
+                    item.className = 'vibe-img-preview-item';
+                    const pName = extractProductName(p, idx);
+                    const pid = String(p._id || p.id || p.sku || '');
+
+                    const isLinked = (pid && linkedMap[pid]) ||
+                        (imgUrl && linkedMap[imgUrl]) ||
+                        (pName && linkedMap['name:' + pName.toLowerCase().trim()]);
+
+                    item.title = (isLinked ? '✓ [Đã liên kết] ' : '') + pName;
+                    
+                    let badgeHtml = '';
+                    if (isLinked) {
+                        badgeHtml = `
+                            <div class="vibe-linked-badge" title="Đã liên kết với Inkvibe">
+                                <svg viewBox="0 0 24 24">
+                                    <polyline points="20 6 9 17 4 12"></polyline>
+                                </svg>
+                            </div>
+                        `;
+                    }
+
+                    item.innerHTML = '<img src="' + imgUrl + '" alt="" loading="lazy" onerror="this.src=\'data:image/svg+xml;utf8,<svg xmlns=\\\'http://www.w3.org/2000/svg\\\' width=\\\'' + 50 + '\\\' height=\\\'' + 50 + '\\\'><rect width=\\\'' + 50 + '\\\' height=\\\'' + 50 + '\\\' fill=\\\'%23f1f5f9\\\'/></svg>\'">' + badgeHtml;
+                    container.appendChild(item);
+                }
+            });
+
+            if (countEl) countEl.textContent = totalImgs;
+        });
     }
 
     /**
-     * Open Modal - NEVER FAILS, ALWAYS OPENS
+     * Open Modal
      */
     function openModal(selectedProducts) {
+        console.log('[16vibe] openModal called with:', selectedProducts);
+        ensureModalStylesInjected();
+
         if (!Array.isArray(selectedProducts) || selectedProducts.length === 0) {
             selectedProducts = resolveCurrentSelectedProducts();
         }
 
         currentSelectedProducts = selectedProducts || [];
+        console.log('[16vibe] currentSelectedProducts count:', currentSelectedProducts.length);
+
         const overlay = createModalDom();
 
         const subtitle = overlay.querySelector('#vibe-modal-subtitle');
         const footerCount = overlay.querySelector('#vibe-footer-selected-count');
-        if (subtitle) {
-            if (currentSelectedProducts.length > 0) {
+        const titleInput = overlay.querySelector('#vibe-input-title');
+        const handleInput = overlay.querySelector('#vibe-input-handle');
+
+        if (currentSelectedProducts.length === 1) {
+            const singleProd = currentSelectedProducts[0];
+            const singleProdName = extractProductName(singleProd, 0);
+            if (titleInput) titleInput.value = singleProdName;
+            if (handleInput) handleInput.value = '';
+            if (subtitle) {
+                subtitle.textContent = 'Sản phẩm: ' + singleProdName;
+            }
+        } else if (currentSelectedProducts.length > 1) {
+            if (titleInput) titleInput.value = '{{item_name}}';
+            if (handleInput) handleInput.value = '';
+            if (subtitle) {
                 subtitle.textContent = 'Sẵn sàng đồng bộ ' + currentSelectedProducts.length + ' sản phẩm đã chọn vào Inkvibe Store';
-            } else {
+            }
+        } else {
+            if (subtitle) {
                 subtitle.textContent = 'Chưa chọn sản phẩm từ danh sách (Vui lòng chọn sản phẩm trên bảng để liên kết)';
             }
         }
         if (footerCount) footerCount.textContent = 'Đã chọn ' + currentSelectedProducts.length + ' sản phẩm';
 
         renderImagesPreview(currentSelectedProducts);
+
         overlay.classList.add('active');
+        overlay.style.setProperty('display', 'flex', 'important');
+        overlay.style.setProperty('opacity', '1', 'important');
+        overlay.style.setProperty('visibility', 'visible', 'important');
+        overlay.style.setProperty('pointer-events', 'auto', 'important');
+        overlay.style.setProperty('z-index', '2147483647', 'important');
+
+        renderMatrixLists();
+        renderVariantsTable();
 
         loadPersonalizationDropdown();
         loadInkvibeMetadataDropdowns();
@@ -875,8 +1728,14 @@
      * Close Modal
      */
     function closeModal() {
-        if (modalElement) {
-            modalElement.classList.remove('active');
+        console.log('[16vibe] closeModal called');
+        const overlay = modalElement || document.getElementById('vibe-link-16vibe-modal');
+        if (overlay) {
+            overlay.classList.remove('active');
+            overlay.style.setProperty('display', 'none', 'important');
+            overlay.style.setProperty('opacity', '0', 'important');
+            overlay.style.setProperty('visibility', 'hidden', 'important');
+            overlay.style.setProperty('pointer-events', 'none', 'important');
         }
     }
 
@@ -895,31 +1754,84 @@
         const personalizationId = document.getElementById('vibe-select-personalization')?.value || '';
         const titleTemplate = document.getElementById('vibe-input-title')?.value || '{{item_name}}';
         const handleTemplate = document.getElementById('vibe-input-handle')?.value || '{{item_name}}';
+        const updateIfExists = document.getElementById('vibe-chk-update-if-exists')?.checked ?? true;
         const descTemplate = document.getElementById('vibe-input-description')?.value || '{{product_description}}';
-        const thumbnailMode = document.getElementById('vibe-select-thumbnail')?.value || 'main';
-        const discountable = document.getElementById('vibe-chk-discountable')?.checked ?? true;
-        const maxQuantity = parseInt(document.getElementById('vibe-input-max-quantity')?.value || '100', 10);
+        const additionalImagesText = document.getElementById('vibe-input-additional-images')?.value || '';
 
         const status = document.getElementById('vibe-select-status')?.value || 'published';
+        const vendorId = document.getElementById('vibe-select-vendor')?.value || 'admin';
         const salesChannelId = document.getElementById('vibe-select-sales-channel')?.value || '';
         const shippingProfileId = document.getElementById('vibe-select-shipping-profile')?.value || '';
-        const categoryId = document.getElementById('vibe-select-category')?.value || '';
+        const selectedCategoryId = document.getElementById('vibe-select-category')?.value || '';
         const collectionId = document.getElementById('vibe-select-collection')?.value || '';
         const productType = document.getElementById('vibe-input-type')?.value || 'Shirt';
+        const basePrice = parseFloat(document.getElementById('vibe-input-base-price')?.value || '23.95');
+        const currencyCode = document.getElementById('vibe-select-currency')?.value || 'usd';
+        const trackInventory = document.getElementById('vibe-chk-track-inventory')?.checked ?? false;
+        const singleProduct = document.getElementById('vibe-chk-single-product')?.checked ?? true;
+        const syncAll = document.getElementById('vibe-chk-sync-all')?.checked ?? false;
+
         const tags = (document.getElementById('vibe-input-tags')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
-        const createVariants = document.getElementById('vibe-chk-create-variants')?.checked ?? true;
+
+        // Parse additional images from textarea
+        const additionalImages = additionalImagesText
+            .split(/\r?\n|,/)
+            .map(s => s.trim())
+            .filter(Boolean);
+
+        // Resolve ancestor chain for category_ids (parent -> child)
+        const ancestorCategoryIds = getCategoryAncestorIds(selectedCategoryId, cachedCategoriesList);
 
         submitBtn.disabled = true;
         const originalBtnHtml = submitBtn.innerHTML;
         submitBtn.innerHTML = '<span>⏳ Đang liên kết (' + currentSelectedProducts.length + ' sp)...</span>';
 
         try {
+            // Build dynamic options & variants from matrix / custom table if not single product
+            let collectedOptions = [];
+            let collectedVariants = [];
+
+            if (!singleProduct) {
+                collectedOptions = tableOptionTitles.map(title => {
+                    const valSet = new Set();
+                    tableVariants.forEach(v => {
+                        if (v[title] !== undefined && String(v[title]).trim()) {
+                            valSet.add(String(v[title]).trim());
+                        }
+                    });
+                    if (valSet.size === 0) valSet.add('Default');
+                    return {
+                        title: title,
+                        values: Array.from(valSet)
+                    };
+                });
+
+                collectedVariants = tableVariants.map((v, idx) => {
+                    const normOptions = {};
+                    tableOptionTitles.forEach(title => {
+                        normOptions[title] = String(v[title] || '').trim();
+                    });
+                    const optVals = Object.values(normOptions).filter(Boolean);
+                    const vPrice = parseFloat(v.price) || basePrice;
+                    return {
+                        title: optVals.join(' / ') || ('Variant ' + (idx + 1)),
+                        options: normOptions,
+                        price: vPrice,
+                        sku_suffix: optVals.map(s => String(s).replace(/[^a-zA-Z0-9_-]/g, '')).join('-')
+                    };
+                });
+            }
+
+            const selectedPersItem = (cachedPersonalizationConfigs || []).find(c => String(c.id) === String(personalizationId));
+            const selectedPersRaw = selectedPersItem?.raw || selectedPersItem || null;
+
             const processedProducts = currentSelectedProducts.map((p, idx) => {
-                const name = p.name || p.title || ('Sản phẩm #' + (idx + 1));
-                const sku = p.sku || p._id || p.id || ('SKU-' + (idx + 1));
-                const desc = p.description || p.prompt || name;
-                const brand = p.brand || '16vibe';
-                const store = p.store_name || 'Ecomlap Store';
+                const raw = p.raw || p;
+                const name = extractProductName(p, idx);
+                const sku = p.sku || raw.sku || raw._id || p._id || ('SKU-' + (idx + 1));
+                const desc = p.description || raw.description || p.prompt || name;
+                const brand = p.brand || raw.brand || '16vibe';
+                const store = p.store_name || raw.store_name || 'Ecomlap Store';
                 const bulletPoints = Array.isArray(p.bullet_points) ? p.bullet_points.join('\n') : (p.tags ? p.tags.join(', ') : '');
 
                 function replacePlaceholders(str) {
@@ -934,62 +1846,150 @@
                         .replace(/\{\{property:key\}\}/g, p.property || '');
                 }
 
-                const resolvedTitle = replacePlaceholders(titleTemplate);
-                let resolvedHandle = replacePlaceholders(handleTemplate)
-                    .toLowerCase()
-                    .replace(/[^a-z0-9]+/g, '-')
-                    .replace(/^-+|-+$/g, '');
-                if (!resolvedHandle) resolvedHandle = 'product-' + sku.toLowerCase();
+                let resolvedTitle = replacePlaceholders(titleTemplate).trim();
+                if (!resolvedTitle || resolvedTitle === '{{item_name}}') {
+                    resolvedTitle = name;
+                }
 
-                const resolvedDesc = replacePlaceholders(descTemplate);
-                const mainImg = p.main_image_url || p.image_url || '';
+                let resolvedHandle = '';
+                if (handleTemplate && handleTemplate.trim() && handleTemplate.trim() !== '{{item_name}}') {
+                    resolvedHandle = replacePlaceholders(handleTemplate)
+                        .toLowerCase()
+                        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-+|-+$/g, '');
+                }
+                if (!resolvedHandle) {
+                    resolvedHandle = resolvedTitle
+                        .toLowerCase()
+                        .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+                        .replace(/[^a-z0-9]+/g, '-')
+                        .replace(/^-+|-+$/g, '');
+                }
+                if (!resolvedHandle) {
+                    resolvedHandle = 'product-' + (sku ? String(sku).toLowerCase().replace(/[^a-z0-9]+/g, '-') : Date.now());
+                }
+
+                const resolvedDesc = replacePlaceholders(descTemplate) || desc || '';
+
+                // Collect multi-images: main_image_url + other_image_url1..10 + additional
+                const productImages = [];
+                const mainImg = raw.main_image_url || raw.main_image || p.main_image_url || p.image_url || '';
+                if (mainImg && typeof mainImg === 'string' && mainImg.trim()) {
+                    productImages.push(mainImg.trim());
+                }
+
+                for (let i = 1; i <= 10; i++) {
+                    const otherImg = raw['other_image_url' + i] || raw['other_image_' + i];
+                    if (otherImg && typeof otherImg === 'string' && otherImg.trim()) {
+                        productImages.push(otherImg.trim());
+                    }
+                }
+
+                if (additionalImages.length > 0) {
+                    additionalImages.forEach(url => {
+                        if (url && !productImages.includes(url)) productImages.push(url);
+                    });
+                }
+
+                const uniqueImages = Array.from(new Set(productImages));
+                const finalThumbnail = uniqueImages.length > 0 ? uniqueImages[0] : (mainImg || '');
+
+                const prodPersRaw = p.personalization_config_data || raw.personalization_config || raw.personalization || raw.customization || selectedPersRaw;
 
                 return {
+                    external_id: sku,
+                    ecomlap_id: p._id || p.id || raw._id || '',
                     title: resolvedTitle,
+                    name: resolvedTitle,
+                    item_name: resolvedTitle,
+                    product_name: resolvedTitle,
                     handle: resolvedHandle,
                     description: resolvedDesc,
-                    thumbnail: (thumbnailMode === 'none') ? '' : mainImg,
-                    images: mainImg ? [mainImg] : [],
-                    discountable: discountable,
-                    max_quantity: maxQuantity,
+                    thumbnail: finalThumbnail,
+                    images: uniqueImages,
+                    category_ids: ancestorCategoryIds,
+                    collection_id: collectionId,
+                    tags: tags,
+                    type: productType,
                     status: status,
+                    vendor_id: vendorId,
                     sales_channel_id: salesChannelId,
                     shipping_profile_id: shippingProfileId,
-                    category_ids: categoryId ? [categoryId] : [],
-                    collection_id: collectionId,
-                    type: productType,
-                    tags: tags,
-                    create_default_variants: createVariants,
+                    base_price: basePrice,
+                    currency_code: currencyCode,
+                    track_inventory: trackInventory,
+                    single_product: singleProduct,
+                    update_if_exists: updateIfExists,
+                    discountable: true,
+                    max_quantity: 100,
                     personalization_config_id: personalizationId,
+                    personalization_config_data: prodPersRaw,
                     metadata: {
                         source: 'ecomlap',
                         external_id: sku,
                         ecomlap_id: p._id || p.id || '',
+                        brand: brand,
+                        store_name: store,
+                        vendor_id: vendorId,
+                        personalization_config_id: personalizationId,
+                        personalization_config_data: prodPersRaw,
                         linked_at: new Date().toISOString()
                     }
                 };
             });
 
+            const payload = {
+                config: {
+                    personalization_config_id: personalizationId,
+                    personalization_config_data: selectedPersRaw,
+                    status: status,
+                    vendor_id: vendorId,
+                    sales_channel_id: salesChannelId,
+                    shipping_profile_id: shippingProfileId,
+                    category_ids: ancestorCategoryIds,
+                    collection_id: collectionId,
+                    product_type: productType,
+                    base_price: basePrice,
+                    currency_code: currencyCode,
+                    track_inventory: trackInventory,
+                    single_product: singleProduct,
+                    options: collectedOptions,
+                    variants: collectedVariants,
+                    update_if_exists: updateIfExists,
+                    additional_images: additionalImages,
+                    tags: tags,
+                    discountable: true,
+                    max_quantity: 100,
+                    sync_all: syncAll
+                },
+                products: processedProducts
+            };
+
             chrome.runtime.sendMessage({
                 action: 'linkProductsToInkvibe',
-                data: {
-                    products: processedProducts,
-                    config: {
-                        personalization_config_id: personalizationId,
-                        sales_channel_id: salesChannelId,
-                        status: status
-                    }
-                }
+                data: payload
             }, (res) => {
                 submitBtn.disabled = false;
                 submitBtn.innerHTML = originalBtnHtml;
 
                 if (res && res.success) {
-                    showToast('🎉 Đã liên kết thành công ' + processedProducts.length + ' sản phẩm sang Inkvibe Store!', 'success');
+                    const msg = res.message || ('🎉 Đã liên kết thành công ' + processedProducts.length + ' sản phẩm sang Inkvibe!');
+                    showToast(msg, 'success');
+
+                    // Immediately dispatch local event to refresh badges on current page
+                    chrome.storage.local.get(['linked_products_map'], (st) => {
+                        if (st && st.linked_products_map) {
+                            window.dispatchEvent(new CustomEvent('16vibe-products-linked-local', {
+                                detail: { linkedMap: st.linked_products_map }
+                            }));
+                        }
+                    });
+
                     setTimeout(closeModal, 1500);
                 } else {
-                    showToast('Đã lưu ' + processedProducts.length + ' sản phẩm vào bộ nhớ liên kết extension.', 'success');
-                    setTimeout(closeModal, 1500);
+                    const err = (res && res.error) || 'Lỗi liên kết sản phẩm sang Inkvibe';
+                    showToast(err, 'error');
                 }
             });
 
@@ -1004,65 +2004,118 @@
      * Helper to resolve currently selected products from all possible stores
      */
     function resolveCurrentSelectedProducts() {
+        // 1. Try Zustand store
         try {
             if (typeof window !== 'undefined' && window.__16vibe_store && typeof window.__16vibe_store.getState === 'function') {
                 const st = window.__16vibe_store.getState();
-                const selIds = st.selectedIds || [];
-                if (Array.isArray(selIds) && selIds.length > 0 && Array.isArray(st.ideas)) {
-                    const matched = st.ideas.filter(i => {
-                        const id = i._id || i.id;
-                        return selIds.some(sid => String(sid) === String(id));
+                let list = [];
+                if (typeof st.getSelectedIdeas === 'function') {
+                    const sel = st.getSelectedIdeas();
+                    if (Array.isArray(sel) && sel.length > 0) list = sel;
+                }
+                if (list.length === 0) {
+                    const selIds = st.selectedIds || [];
+                    const allProds = st.ideas || st.products || [];
+                    if (selIds.length > 0 && allProds.length > 0) {
+                        list = allProds.filter(p => selIds.some(sid => String(sid) === String(p._id || p.id || p.sku)));
+                    }
+                }
+                if (list.length > 0) {
+                    return list.map((p, idx) => {
+                        const trueName = extractProductName(p, idx);
+                        return {
+                            ...p,
+                            name: trueName,
+                            title: trueName,
+                            item_name: trueName,
+                            product_name: trueName
+                        };
                     });
-                    if (matched.length > 0) return matched;
                 }
             }
         } catch (e) {}
 
+        // 2. Try checked checkboxes in DOM
         try {
-            const checkedBoxes = document.querySelectorAll('input[type="checkbox"]:checked');
-            const domProducts = [];
-            checkedBoxes.forEach(chk => {
-                const row = chk.closest('tr') || chk.closest('.product-card') || chk.closest('[data-product-id]');
-                if (row) {
-                    const title = row.querySelector('.product-title, .title, a')?.textContent?.trim();
-                    const img = row.querySelector('img')?.src;
-                    if (title) {
-                        domProducts.push({
-                            name: title,
-                            title: title,
+            const domChecks = document.querySelectorAll('input.item-checkbox:checked, input.select-checkbox:checked, input[type="checkbox"]:checked');
+            const foundFromDom = [];
+            domChecks.forEach((cb, idx) => {
+                const tr = cb.closest('tr') || cb.closest('.product-card') || cb.closest('.item-row');
+                if (tr) {
+                    const img = tr.querySelector('img')?.src || '';
+                    const title = extractTitleFromRow(tr);
+                    const id = cb.value || cb.dataset.id || tr.dataset.id || '';
+                    if (id || title) {
+                        const finalName = title || ('Sản phẩm #' + (idx + 1));
+                        foundFromDom.push({
+                            _id: id || ('prod_' + (idx + 1)),
+                            id: id,
+                            name: finalName,
+                            title: finalName,
+                            item_name: finalName,
+                            product_name: finalName,
                             image_url: img,
-                            main_image_url: img,
-                            sku: row.getAttribute('data-product-id') || row.getAttribute('data-id') || 'PROD'
+                            main_image_url: img
                         });
                     }
                 }
             });
-            if (domProducts.length > 0) return domProducts;
+            if (foundFromDom.length > 0) return foundFromDom;
         } catch (e) {}
 
         return [];
     }
 
+    // Expose functions globally on window
     window.__16vibe_openLinkModal = openModal;
     window.__16vibe_closeLinkModal = closeModal;
 
+    // Listen for custom event dispatched by gemini-content.js
     window.addEventListener('16vibe-open-link-modal', (e) => {
-        const ideas = (e && e.detail && e.detail.ideas) || [];
+        console.log('[16vibe] 16vibe-open-link-modal event received:', e.detail);
+        const ideas = (e && e.detail && (e.detail.ideas || e.detail.products)) || [];
         openModal(ideas);
     });
 
+    // Capture-phase document click listener for guaranteed click capture
     document.addEventListener('click', (e) => {
-        const btn = e.target.closest('button, .btn, [role="button"]');
-        if (btn) {
-            const text = (btn.innerText || btn.textContent || '').trim();
-            if (text.includes('Link 16vibe') || text.includes('Cấu hình đã chọn')) {
-                console.log('[16vibe] "Link 16vibe" button intercepted by capture listener!');
-                e.preventDefault();
-                e.stopPropagation();
-                openModal([]);
-            }
+        const target = e.target;
+        if (!target) return;
+
+        // If clicking inside the modal dialog itself, do NOT intercept as "open modal"
+        if (target.closest('#vibe-link-16vibe-modal')) {
+            return;
+        }
+
+        const btn = target.closest('button, [role="button"], a, .btn, .ant-btn') || target;
+        const text = (btn.innerText || btn.textContent || target.innerText || target.textContent || '').trim();
+        const title = (btn.getAttribute('title') || target.getAttribute('title') || '').trim();
+        const id = (btn.id || target.id || '');
+        const className = (btn.className || '') + ' ' + (target.className || '');
+
+        const isLinkVibeClick = 
+            /link\s*16\s*vibe|cấu\s*hình\s*đã\s*chọn|liên\s*kết.*16vibe/i.test(text) ||
+            /link\s*16\s*vibe|inkvibe/i.test(title) ||
+            id.includes('link-16vibe') ||
+            id.includes('btn-link-16vibe') ||
+            className.includes('link-16vibe');
+
+        if (isLinkVibeClick) {
+            console.log('[16vibe] "Link 16vibe" clicked, intercepted by capture listener! Text:', text);
+            e.preventDefault();
+            e.stopPropagation();
+
+            const selected = resolveCurrentSelectedProducts();
+            openModal(selected);
         }
     }, true);
 
-    console.log('[16vibe] Link 16vibe modal script loaded and active.');
+    // Expose global controller
+    window.__16vibe_modal = {
+        open: openModal,
+        close: closeModal,
+        getCategoryAncestorIds: getCategoryAncestorIds
+    };
+
+    console.log('[16vibe] Link 16vibe Modal loaded successfully.');
 })();

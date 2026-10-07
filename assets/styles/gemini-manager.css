@@ -2008,3 +2008,16 @@ textarea.form-control {
     color: white;
     border-color: #667eea;
 }
+
+/* ==========================================================================
+   Linked Product Badges for Table & Cards in Manager Panel
+   ========================================================================== */
+.idea-thumb, .td-image {
+    position: relative !important;
+}
+
+.td-image .vibe-linked-badge {
+    top: 6px !important;
+    right: 6px !important;
+}
+
