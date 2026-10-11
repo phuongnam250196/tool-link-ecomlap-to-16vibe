@@ -948,7 +948,7 @@
                         <input type="checkbox" id="vibe-chk-upload-to-b2" checked>
                         <span style="font-weight: 600;">☁️ Tải ảnh & upload lên Backblaze B2 (WebP)</span>
                     </label>
-                    <div class="vibe-field-desc" style="margin-bottom: 12px;">Tự động tải toàn bộ ảnh sản phẩm từ Ecomlap, tối ưu nén WebP và upload trực tiếp vào B2 (<code>img.16vibe.com/products/{slug}/...</code>).</div>
+                    <div class="vibe-field-desc" style="margin-bottom: 12px;">Tự động tải toàn bộ ảnh sản phẩm từ Ecomlap, tối ưu nén WebP và upload trực tiếp vào B2 (<code>img.16vibe.com/products/{sku}/...</code>).</div>
 
                     <label class="vibe-checkbox-label">
                         <input type="checkbox" id="vibe-chk-sync-all">
