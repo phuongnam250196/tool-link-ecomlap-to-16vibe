@@ -944,6 +944,12 @@
 
                 <!-- Footer Sync All Box -->
                 <div class="vibe-sync-all-wrap">
+                    <label class="vibe-checkbox-label" style="margin-bottom: 6px;">
+                        <input type="checkbox" id="vibe-chk-upload-to-b2" checked>
+                        <span style="font-weight: 600;">☁️ Tải ảnh & upload lên Backblaze B2 (WebP)</span>
+                    </label>
+                    <div class="vibe-field-desc" style="margin-bottom: 12px;">Tự động tải toàn bộ ảnh sản phẩm từ Ecomlap, tối ưu nén WebP và upload trực tiếp vào B2 (<code>img.16vibe.com/products/{slug}/...</code>).</div>
+
                     <label class="vibe-checkbox-label">
                         <input type="checkbox" id="vibe-chk-sync-all">
                         <span>Tiếp tục cho đến khi link hết sản phẩm</span>
@@ -1770,6 +1776,7 @@
         const trackInventory = document.getElementById('vibe-chk-track-inventory')?.checked ?? false;
         const singleProduct = document.getElementById('vibe-chk-single-product')?.checked ?? true;
         const syncAll = document.getElementById('vibe-chk-sync-all')?.checked ?? false;
+        const uploadToB2 = document.getElementById('vibe-chk-upload-to-b2')?.checked ?? true;
 
         const tags = (document.getElementById('vibe-input-tags')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
 
@@ -1784,7 +1791,7 @@
 
         submitBtn.disabled = true;
         const originalBtnHtml = submitBtn.innerHTML;
-        submitBtn.innerHTML = '<span>⏳ Đang liên kết (' + currentSelectedProducts.length + ' sp)...</span>';
+        submitBtn.innerHTML = '<span>⏳ Đang liên kết & xử lý ảnh B2 (' + currentSelectedProducts.length + ' sp)...</span>';
 
         try {
             // Build dynamic options & variants from matrix / custom table if not single product
@@ -1957,6 +1964,7 @@
                     options: collectedOptions,
                     variants: collectedVariants,
                     update_if_exists: updateIfExists,
+                    upload_to_b2: uploadToB2,
                     additional_images: additionalImages,
                     tags: tags,
                     discountable: true,
