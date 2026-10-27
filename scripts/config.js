@@ -4,9 +4,9 @@
  */
 
 export const DEFAULT_CONFIG = {
-    FRONTEND_URL: 'http://localhost:3000',
-    BACKEND_URL: 'http://localhost:9000',
-    SERVER_URL: 'http://localhost:9000',
+    FRONTEND_URL: 'https://ecomlap.com',
+    BACKEND_URL: 'https://api.16vibe.com',
+    SERVER_URL: 'https://api.16vibe.com',
 };
 
 export const API_ENDPOINTS = {

@@ -14,6 +14,9 @@
     "<all_urls>",
     "*://ecomlap.com/*",
     "*://*.ecomlap.com/*",
+    "*://api.16vibe.com/*",
+    "*://16vibe.com/*",
+    "*://*.16vibe.com/*",
     "*://gemini.google.com/*",
     "*://ai.google.dev/*",
     "*://lh3.googleusercontent.com/*",
@@ -27,6 +30,17 @@
     "http://127.0.0.1:9000/*"
   ],
   "content_scripts": [
+    {
+      "matches": [
+        "*://ecomlap.com/*",
+        "*://*.ecomlap.com/*"
+      ],
+      "js": [
+        "scripts/content/in-page-interceptor.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN"
+    },
     {
       "matches": [
         "*://ecomlap.com/*",
@@ -88,6 +102,7 @@
       "resources": [
         ".env",
         "scripts/config.js",
+        "scripts/content/in-page-interceptor.js",
         "assets/images/*",
         "assets/styles/*"
       ],

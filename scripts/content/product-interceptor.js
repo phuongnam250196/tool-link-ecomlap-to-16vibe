@@ -329,24 +329,33 @@
         // Directly update Zustand store if accessible
         try {
             if (window.__16vibe_store && typeof window.__16vibe_store.setState === 'function') {
+                const pageInfo = detectEcomlapPageInfo();
+                const totalCount = pageInfo.totalItems || normalizedList.length;
+                const totalPages = Math.max(pageInfo.totalPages, pageInfo.currentPage, 1);
+
                 window.__16vibe_store.setState({
                     ideas: normalizedList,
                     stats: {
-                        total: normalizedList.length,
+                        total: totalCount,
                         used: normalizedList.filter(p => p.is_used).length,
                         unused: normalizedList.filter(p => !p.is_used).length
                     },
                     pagination: {
-                        current_page: 1,
-                        last_page: 1,
-                        total: normalizedList.length,
-                        limit: normalizedList.length
+                        current_page: pageInfo.currentPage,
+                        last_page: totalPages,
+                        total: totalCount,
+                        limit: normalizedList.length || 20
                     }
                 });
             }
         } catch (e) {
             console.warn('[16vibe] Could not update __16vibe_store directly:', e);
         }
+
+        // Render / refresh Product Manager pagination controls
+        try {
+            renderProductManagerPagination();
+        } catch (e) {}
     }
 
     /**
@@ -780,252 +789,24 @@
         if (window.__16vibe_network_hook_injected) return;
         window.__16vibe_network_hook_injected = true;
 
+        // In MV3, in-page-interceptor.js runs natively in MAIN world via manifest.json
+        // without inline script tags, preventing any CSP unsafe-inline violation.
+        // As a fallback for older environments, inject via script.src (never inline textContent).
         try {
+            if (document.documentElement.getAttribute('data-16vibe-hook') === 'ready') {
+                return;
+            }
             const script = document.createElement('script');
-            script.textContent = `
-                (function() {
-                    if (window.__16vibe_hook_installed) return;
-                    window.__16vibe_hook_installed = true;
-
-                    function isTarget(url) {
-                        if (!url) return false;
-                        const str = typeof url === 'string' ? url : (url.href || url.url || String(url));
-                        if (str.includes('/ai-status') || str.includes('/status') || str.includes('/analytics')) return false;
-                        try {
-                            const u = new URL(str, window.location.origin);
-                            const cleanPath = u.pathname.replace(/\/+$/, '');
-                            return cleanPath === '/api/products';
-                        } catch (e) {
-                            return /\/api\/products(?:\/)?(?:\?|#|$)/.test(str);
-                        }
-                    }
-
-                    // Monkey-patch window.fetch
-                    const originalFetch = window.fetch;
-                    window.fetch = async function(...args) {
-                        const input = args[0];
-                        const init = args[1];
-                        let url = '';
-                        if (typeof input === 'string') {
-                            url = input;
-                        } else if (input && typeof input === 'object') {
-                            url = input.url || input.href || String(input);
-                        }
-
-                        // Capture auth token if present
-                        try {
-                            if (init && init.headers) {
-                                const h = init.headers;
-                                let auth = '';
-                                if (typeof h.get === 'function') {
-                                    auth = h.get('authorization') || h.get('Authorization');
-                                } else if (typeof h === 'object') {
-                                    auth = h.authorization || h.Authorization;
-                                }
-                                if (auth) {
-                                    window.__16vibe_auth_token = auth;
-                                    try {
-                                        document.documentElement.setAttribute('data-16vibe-auth', auth);
-                                        window.dispatchEvent(new CustomEvent('16vibe-token-captured', { detail: { token: auth } }));
-                                    } catch(e) {}
-                                }
-                            }
-                        } catch(e) {}
-
-                        const response = await originalFetch.apply(this, args);
-
-                        if (isTarget(url) && response && response.ok) {
-                            try {
-                                const clone = response.clone();
-                                clone.json().then(data => {
-                                    window.dispatchEvent(new CustomEvent('16vibe-products-captured', {
-                                        detail: { products: data, url: url, source: 'fetch', time: Date.now() }
-                                    }));
-                                }).catch(() => {});
-                            } catch(e) {}
-                        }
-
-                        return response;
-                    };
-
-                    // Monkey-patch XMLHttpRequest
-                    const originalOpen = XMLHttpRequest.prototype.open;
-                    const originalSend = XMLHttpRequest.prototype.send;
-                    const originalSetHeader = XMLHttpRequest.prototype.setRequestHeader;
-
-                    XMLHttpRequest.prototype.open = function(method, url) {
-                        this._16vibeUrl = url;
-                        return originalOpen.apply(this, arguments);
-                    };
-
-                    XMLHttpRequest.prototype.setRequestHeader = function(header, value) {
-                        if (header && header.toLowerCase() === 'authorization' && value) {
-                            window.__16vibe_auth_token = value;
-                            try {
-                                document.documentElement.setAttribute('data-16vibe-auth', value);
-                                window.dispatchEvent(new CustomEvent('16vibe-token-captured', { detail: { token: value } }));
-                            } catch(e) {}
-                        }
-                        return originalSetHeader.apply(this, arguments);
-                    };
-
-                    XMLHttpRequest.prototype.send = function() {
-                        if (isTarget(this._16vibeUrl)) {
-                            this.addEventListener('load', () => {
-                                if (this.status >= 200 && this.status < 300) {
-                                    try {
-                                        const data = JSON.parse(this.responseText);
-                                        window.dispatchEvent(new CustomEvent('16vibe-products-captured', {
-                                            detail: { products: data, url: this._16vibeUrl, source: 'xhr', time: Date.now() }
-                                        }));
-                                    } catch(e) {}
-                                }
-                            });
-                        }
-                        return originalSend.apply(this, arguments);
-                    };
-
-                    // Intercept SPA navigation (pushState / replaceState)
-                    const originalPushState = history.pushState;
-                    history.pushState = function(...args) {
-                        const ret = originalPushState.apply(this, args);
-                        window.dispatchEvent(new CustomEvent('16vibe-route-changed', { detail: { url: window.location.href } }));
-                        return ret;
-                    };
-                    const originalReplaceState = history.replaceState;
-                    history.replaceState = function(...args) {
-                        const ret = originalReplaceState.apply(this, args);
-                        window.dispatchEvent(new CustomEvent('16vibe-route-changed', { detail: { url: window.location.href } }));
-                        return ret;
-                    };
-
-                    // Deep token searcher (JWT regex + keys + cookies + storage)
-                    function findTokenAnywhere() {
-                        if (window.__16vibe_auth_token && window.__16vibe_auth_token.length > 20) {
-                            return window.__16vibe_auth_token;
-                        }
-                        try {
-                            const domAuth = document.documentElement.getAttribute('data-16vibe-auth');
-                            if (domAuth && domAuth.length > 20) return domAuth;
-                        } catch(e) {}
-
-                        // 1. Literal keys in localStorage & sessionStorage
-                        const keys = ['token', 'auth_token', 'accessToken', 'access_token', 'jwt', 'hmt-token', 'user_token', 'auth', 'user', 'session'];
-                        for (const k of keys) {
-                            try {
-                                const v = localStorage.getItem(k) || sessionStorage.getItem(k);
-                                if (v) {
-                                    if (typeof v === 'string' && v.length > 20 && !v.startsWith('{')) {
-                                        return v.startsWith('Bearer ') ? v : 'Bearer ' + v;
-                                    }
-                                    if (v.startsWith('{')) {
-                                        const parsed = JSON.parse(v);
-                                        const t = parsed.token || parsed.accessToken || parsed.access_token || parsed.jwt || (parsed.user && parsed.user.token) || (parsed.data && parsed.data.token);
-                                        if (t && typeof t === 'string' && t.length > 15) {
-                                            return t.startsWith('Bearer ') ? t : 'Bearer ' + t;
-                                        }
-                                    }
-                                }
-                            } catch(e) {}
-                        }
-
-                        // 2. Scan ALL localStorage items for JWT token (contains eyJ...)
-                        try {
-                            for (let i = 0; i < localStorage.length; i++) {
-                                const k = localStorage.key(i);
-                                const val = localStorage.getItem(k);
-                                if (val && typeof val === 'string' && val.includes('eyJ')) {
-                                    const match = val.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
-                                    if (match) return 'Bearer ' + match[0];
-                                }
-                            }
-                        } catch(e) {}
-
-                        // 3. Scan document.cookie for JWT token
-                        try {
-                            const cookies = document.cookie.split(';');
-                            for (const c of cookies) {
-                                const trimmed = c.trim();
-                                if (trimmed.includes('eyJ')) {
-                                    const match = trimmed.match(/eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}/);
-                                    if (match) return 'Bearer ' + match[0];
-                                }
-                            }
-                        } catch(e) {}
-
-                        return '';
-                    }
-
-                    // Initial sync of token
-                    try {
-                        const initTok = findTokenAnywhere();
-                        if (initTok) {
-                            window.__16vibe_auth_token = initTok;
-                            document.documentElement.setAttribute('data-16vibe-auth', initTok);
-                        }
-                    } catch(e) {}
-
-                    // Listen for personalization config requests from extension (supports both CustomEvent and postMessage)
-                    async function handleFetchPersonalization(requestId) {
-                        try {
-                            let auth = findTokenAnywhere();
-                            const headers = { 'Accept': 'application/json' };
-                            if (auth) {
-                                headers['Authorization'] = auth.startsWith('Bearer ') ? auth : 'Bearer ' + auth;
-                            }
-                            console.log('[16vibe in-page] Calling /api/product-personalization-configs with auth:', auth ? (auth.slice(0, 25) + '...') : 'none');
-                            const res = await originalFetch('/api/product-personalization-configs?status=active&limit=100', {
-                                method: 'GET',
-                                headers: headers,
-                                credentials: 'include'
-                            });
-                            console.log('[16vibe in-page] Personalization response status:', res.status);
-                            if (res.ok) {
-                                const data = await res.json();
-                                console.log('[16vibe in-page] Personalization data received:', data);
-                                const items = Array.isArray(data) ? data : (data.docs || data.data || data.configs || data.items || []);
-                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: true, data: data, items: items } }));
-                                if (requestId) {
-                                    window.postMessage({ type: '16VIBE_PERSONALIZATION_CONFIGS_RES', requestId: requestId, success: true, items: items, data: data }, '*');
-                                }
-                            } else {
-                                const errTxt = await res.text().catch(function() { return ''; });
-                                console.warn('[16vibe in-page] Personalization HTTP error:', res.status, errTxt);
-                                window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, status: res.status, error: errTxt } }));
-                                if (requestId) {
-                                    window.postMessage({ type: '16VIBE_PERSONALIZATION_CONFIGS_RES', requestId: requestId, success: false, error: errTxt }, '*');
-                                }
-                            }
-                        } catch(err) {
-                            console.error('[16vibe in-page] Personalization fetch failed:', err);
-                            window.dispatchEvent(new CustomEvent('16vibe-personalization-response', { detail: { success: false, error: err.message } }));
-                            if (requestId) {
-                                window.postMessage({ type: '16VIBE_PERSONALIZATION_CONFIGS_RES', requestId: requestId, success: false, error: err.message }, '*');
-                            }
-                        }
-                    }
-
-                    window.addEventListener('16vibe-fetch-personalization', function(e) {
-                        const reqId = e.detail && e.detail.requestId;
-                        handleFetchPersonalization(reqId);
-                    });
-
-                    window.addEventListener('message', function(event) {
-                        if (event.source !== window || !event.data) return;
-                        if (event.data.type === '16VIBE_FETCH_PERSONALIZATION_CONFIGS_REQ') {
-                            handleFetchPersonalization(event.data.requestId);
-                        }
-                    });
-                })();
-            `;
+            script.src = chrome.runtime.getURL('scripts/content/in-page-interceptor.js');
+            script.onload = function() {
+                this.remove();
+            };
             const parent = document.head || document.documentElement;
             if (parent) {
                 parent.appendChild(script);
-                script.remove();
             } else {
                 document.addEventListener('DOMContentLoaded', () => {
                     (document.head || document.documentElement).appendChild(script);
-                    script.remove();
                 });
             }
         } catch (e) {
@@ -1119,21 +900,71 @@
     let badgeObserver = null;
     let badgeDebounceTimer = null;
 
+    function normalizeImageUrl(url) {
+        if (!url || typeof url !== 'string') return '';
+        try {
+            return url.split('?')[0].split('#')[0].trim();
+        } catch(e) {
+            return url.trim();
+        }
+    }
+
     function isItemLinked(id, title, imgUrl, map) {
         if (!map || typeof map !== 'object') return false;
-        if (id && map[String(id)]) return true;
-        if (imgUrl && map[String(imgUrl)]) return true;
-        if (title && map['name:' + String(title).toLowerCase().trim()]) return true;
+
+        // 1. Direct ID / SKU match
+        if (id) {
+            const strId = String(id).trim();
+            if (map[strId]) return true;
+        }
+
+        // 2. Image URL match (exact, clean, or by unique filename)
+        if (imgUrl) {
+            const rawUrl = String(imgUrl).trim();
+            if (map[rawUrl]) return true;
+
+            const cleanUrl = normalizeImageUrl(rawUrl);
+            if (cleanUrl) {
+                if (map[cleanUrl]) return true;
+                const fn = cleanUrl.split('/').pop();
+                if (fn && fn.length > 5 && map['fn:' + fn]) return true;
+            }
+        }
+
+        // 3. Title match (case-insensitive)
+        if (title) {
+            const cleanTitle = String(title).toLowerCase().trim();
+            if (cleanTitle && map['name:' + cleanTitle]) return true;
+        }
+
         return false;
     }
 
     function createBadgeElement(titleText) {
         const badge = document.createElement('div');
         badge.className = 'vibe-linked-badge';
-        badge.title = titleText || 'Đã liên kết với Inkvibe';
+        badge.title = titleText || 'Đã liên kết với 16vibe';
         badge.setAttribute('data-vibe-badge', 'true');
+        badge.style.cssText = `
+            position: absolute !important;
+            top: 4px !important;
+            right: 4px !important;
+            width: 22px !important;
+            height: 22px !important;
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%) !important;
+            color: #ffffff !important;
+            border-radius: 50% !important;
+            border: 2px solid #ffffff !important;
+            box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4) !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            z-index: 99999 !important;
+            cursor: default !important;
+            pointer-events: auto !important;
+        `;
         badge.innerHTML = `
-            <svg viewBox="0 0 24 24">
+            <svg viewBox="0 0 24 24" style="width: 12px !important; height: 12px !important; fill: none !important; stroke: #ffffff !important; stroke-width: 3 !important; stroke-linecap: round !important; stroke-linejoin: round !important; display: block !important;">
                 <polyline points="20 6 9 17 4 12"></polyline>
             </svg>
         `;
@@ -1144,15 +975,22 @@
         if (!linkedMap || Object.keys(linkedMap).length === 0) return;
 
         try {
-            // 1. Table rows on Ecomlap (e.g. table tbody tr)
-            const rows = document.querySelectorAll('table tbody tr');
+            // 1. Table rows on Ecomlap (e.g. table tbody tr, .ant-table-row)
+            const rows = document.querySelectorAll('table tbody tr, .ant-table-row, [role="row"]');
             rows.forEach((row, idx) => {
                 const title = extractTitleFromRow(row);
-                const id = row.getAttribute('data-id') || row.getAttribute('data-product-id') || '';
+                const id = row.getAttribute('data-id') 
+                    || row.getAttribute('data-product-id') 
+                    || row.getAttribute('data-row-key') 
+                    || row.querySelector('input[type="checkbox"]')?.value 
+                    || '';
                 const img = row.querySelector('img');
-                const imgSrc = img?.currentSrc || img?.src || '';
+                const imgSrc = img?.currentSrc || img?.src || img?.getAttribute('data-src') || '';
 
                 if (isItemLinked(id, title, imgSrc, linkedMap)) {
+                    row.classList.add('vibe-item-linked');
+                    row.style.setProperty('background-color', '#f0fdf4', 'important');
+
                     const imgCell = (img && img.closest('td')) || (img && img.parentElement) || row.querySelector('td:nth-child(2), td:first-child');
                     if (imgCell) {
                         const targetWrapper = img?.parentElement || imgCell;
@@ -1161,29 +999,51 @@
                             if (cs.position === 'static') {
                                 targetWrapper.style.position = 'relative';
                             }
-                            targetWrapper.appendChild(createBadgeElement(`Đã liên kết với Inkvibe: ${title || 'Sản phẩm'}`));
+                            targetWrapper.appendChild(createBadgeElement(`Đã liên kết với 16vibe: ${title || 'Sản phẩm'}`));
                         }
                     }
+                } else if (row.classList.contains('vibe-item-linked')) {
+                    row.classList.remove('vibe-item-linked');
+                    if (row.style.backgroundColor === '#f0fdf4' || row.style.backgroundColor === 'rgb(240, 253, 244)') {
+                        row.style.backgroundColor = '';
+                    }
+                    const badge = row.querySelector('.vibe-linked-badge');
+                    if (badge) badge.remove();
                 }
             });
 
             // 2. Product cards / grid items on Ecomlap
-            const cards = document.querySelectorAll('.product-card, .product-item, [data-product], [data-product-id], .card, .ant-card');
+            const cards = document.querySelectorAll('.product-card, .product-item, [data-product], [data-product-id], .card, .ant-card, [class*="card"]');
             cards.forEach((card) => {
-                const title = extractTitleFromRow(card);
-                const id = card.getAttribute('data-product-id') || card.getAttribute('data-id') || '';
+                const title = extractTitleFromRow(card) || card.querySelector('.title, .name, [class*="title"], [class*="name"]')?.textContent?.trim() || '';
+                const id = card.getAttribute('data-product-id') 
+                    || card.getAttribute('data-id') 
+                    || card.querySelector('input[type="checkbox"]')?.value 
+                    || '';
                 const img = card.querySelector('img');
-                const imgSrc = img?.currentSrc || img?.src || '';
+                const imgSrc = img?.currentSrc || img?.src || img?.getAttribute('data-src') || '';
 
                 if (isItemLinked(id, title, imgSrc, linkedMap)) {
-                    const thumbWrapper = (img && img.closest('.image, .thumb, .product-thumb, .cover, .ant-card-cover')) || (img && img.parentElement) || card;
+                    card.classList.add('vibe-item-linked');
+                    card.style.setProperty('background-color', '#f0fdf4', 'important');
+                    card.style.setProperty('border-color', '#86efac', 'important');
+
+                    const thumbWrapper = (img && img.closest('.image, .thumb, .product-thumb, .cover, .ant-card-cover, [class*="thumb"], [class*="image"]')) || (img && img.parentElement) || card;
                     if (thumbWrapper && !thumbWrapper.querySelector('.vibe-linked-badge')) {
                         const cs = window.getComputedStyle(thumbWrapper);
                         if (cs.position === 'static') {
                             thumbWrapper.style.position = 'relative';
                         }
-                        thumbWrapper.appendChild(createBadgeElement(`Đã liên kết với Inkvibe: ${title || 'Sản phẩm'}`));
+                        thumbWrapper.appendChild(createBadgeElement(`Đã liên kết với 16vibe: ${title || 'Sản phẩm'}`));
                     }
+                } else if (card.classList.contains('vibe-item-linked')) {
+                    card.classList.remove('vibe-item-linked');
+                    if (card.style.backgroundColor === '#f0fdf4' || card.style.backgroundColor === 'rgb(240, 253, 244)') {
+                        card.style.backgroundColor = '';
+                        card.style.borderColor = '';
+                    }
+                    const badge = card.querySelector('.vibe-linked-badge');
+                    if (badge) badge.remove();
                 }
             });
 
@@ -1192,22 +1052,284 @@
             galleryCards.forEach((item) => {
                 const title = item.querySelector('.idea-name')?.textContent || item.querySelector('.idea-title')?.textContent || '';
                 const img = item.querySelector('img');
-                const imgSrc = img?.currentSrc || img?.src || '';
+                const imgSrc = img?.currentSrc || img?.src || img?.getAttribute('data-src') || '';
                 const id = item.dataset?.id || '';
 
                 if (isItemLinked(id, title, imgSrc, linkedMap)) {
+                    // Highlight linked item with soft green background and light green border
+                    item.classList.add('vibe-item-linked');
+                    item.style.setProperty('background-color', '#f0fdf4', 'important');
+                    item.style.setProperty('border-color', '#86efac', 'important');
+
                     const thumb = item.querySelector('.idea-thumb, .td-image') || item;
                     if (thumb && !thumb.querySelector('.vibe-linked-badge')) {
                         const cs = window.getComputedStyle(thumb);
                         if (cs.position === 'static') {
                             thumb.style.position = 'relative';
                         }
-                        thumb.appendChild(createBadgeElement(`Đã liên kết với Inkvibe`));
+                        thumb.appendChild(createBadgeElement(`Đã liên kết với 16vibe`));
                     }
+
+                    // Add text badge "✓ Đã link"
+                    if (item.classList.contains('idea-card')) {
+                        const thumbEl = item.querySelector('.idea-thumb') || item;
+                        if (!thumbEl.querySelector('.badge-linked-16vibe')) {
+                            const badgeSpan = document.createElement('span');
+                            badgeSpan.className = 'badge-linked-16vibe';
+                            badgeSpan.innerHTML = '✓ Đã link';
+                            thumbEl.appendChild(badgeSpan);
+                        }
+                    } else if (item.classList.contains('table-row')) {
+                        const statusCol = item.querySelector('.td-status');
+                        if (statusCol && !statusCol.querySelector('.badge-linked-16vibe')) {
+                            const badgeSpan = document.createElement('span');
+                            badgeSpan.className = 'badge badge-success badge-linked-16vibe';
+                            badgeSpan.style.cssText = 'background: #10b981 !important; color: #ffffff !important; margin-left: 4px !important; font-weight: 600 !important;';
+                            badgeSpan.innerHTML = '✓ Đã link';
+                            statusCol.appendChild(badgeSpan);
+                        }
+                    }
+                } else {
+                    item.classList.remove('vibe-item-linked');
+                    if (item.style.backgroundColor === '#f0fdf4' || item.style.backgroundColor === 'rgb(240, 253, 244)') {
+                        item.style.backgroundColor = '';
+                        item.style.borderColor = '';
+                    }
+                    const badges = item.querySelectorAll('.badge-linked-16vibe, .vibe-linked-badge');
+                    badges.forEach(b => b.remove());
                 }
             });
         } catch (e) {
             console.warn('[16vibe] Error rendering linked badges:', e);
+        }
+    }
+
+    /**
+     * Dispatch reliable click event to element
+     */
+    function simulateClick(el) {
+        if (!el) return;
+        const target = el.querySelector('button, a') || el;
+        try {
+            target.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+            target.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+            target.click();
+        } catch (e) {
+            try { target.click(); } catch (err) {}
+        }
+    }
+
+    /**
+     * Detect current pagination state from Ecomlap web page
+     */
+    function detectEcomlapPageInfo() {
+        let currentPage = 1;
+        let totalPages = 1;
+        let totalItems = 0;
+        let hasPrev = false;
+        let hasNext = false;
+
+        // 1. Ant Design pagination elements
+        const activeItem = document.querySelector('.ant-pagination-item-active');
+        if (activeItem) {
+            const num = parseInt(activeItem.textContent.trim(), 10) || parseInt(activeItem.getAttribute('title'), 10);
+            if (num) currentPage = num;
+        }
+
+        const items = document.querySelectorAll('.ant-pagination-item');
+        if (items.length > 0) {
+            const lastItem = items[items.length - 1];
+            const num = parseInt(lastItem.textContent.trim(), 10) || parseInt(lastItem.getAttribute('title'), 10);
+            if (num) totalPages = Math.max(currentPage, num);
+        }
+
+        const prevEl = document.querySelector('.ant-pagination-prev');
+        if (prevEl) {
+            hasPrev = !prevEl.classList.contains('ant-pagination-disabled') && prevEl.getAttribute('aria-disabled') !== 'true';
+        } else {
+            hasPrev = currentPage > 1;
+        }
+
+        const nextEl = document.querySelector('.ant-pagination-next');
+        if (nextEl) {
+            hasNext = !nextEl.classList.contains('ant-pagination-disabled') && nextEl.getAttribute('aria-disabled') !== 'true';
+        } else {
+            hasNext = currentPage < totalPages;
+        }
+
+        const totalEl = document.querySelector('.ant-pagination-total-text');
+        if (totalEl) {
+            const m = totalEl.textContent.match(/\d+/);
+            if (m) totalItems = parseInt(m[0], 10);
+        }
+
+        // 2. Fallback to URL search params
+        if (currentPage === 1) {
+            try {
+                const urlParams = new URLSearchParams(window.location.search);
+                const p = parseInt(urlParams.get('page'), 10);
+                if (p && p >= 1) currentPage = p;
+            } catch (e) {}
+        }
+
+        // 3. Fallback to Zustand store
+        try {
+            if (window.__16vibe_store && typeof window.__16vibe_store.getState === 'function') {
+                const st = window.__16vibe_store.getState();
+                if (st && st.pagination) {
+                    if (!totalItems && st.pagination.total) totalItems = st.pagination.total;
+                    if (totalPages <= 1 && st.pagination.last_page) totalPages = st.pagination.last_page;
+                }
+            }
+        } catch (e) {}
+
+        return {
+            currentPage,
+            totalPages: Math.max(currentPage, totalPages),
+            totalItems,
+            hasPrev,
+            hasNext
+        };
+    }
+
+    /**
+     * Trigger page change on Ecomlap page, synchronizing both Ecomlap and Product Manager
+     */
+    function triggerEcomlapPagination(direction) {
+        console.log(`[16vibe] Chuyển trang: ${direction}`);
+        let clicked = false;
+
+        if (direction === 'next') {
+            const nextBtn = document.querySelector('.ant-pagination-next:not(.ant-pagination-disabled) button, .ant-pagination-next:not(.ant-pagination-disabled) a, .ant-pagination-next:not(.ant-pagination-disabled), [aria-label="Next"], [aria-label="next"], .pagination-next, .btn-next');
+            if (nextBtn) {
+                simulateClick(nextBtn);
+                clicked = true;
+            } else {
+                const activeItem = document.querySelector('.ant-pagination-item-active');
+                if (activeItem && activeItem.nextElementSibling && activeItem.nextElementSibling.classList.contains('ant-pagination-item')) {
+                    simulateClick(activeItem.nextElementSibling);
+                    clicked = true;
+                }
+            }
+        } else if (direction === 'prev') {
+            const prevBtn = document.querySelector('.ant-pagination-prev:not(.ant-pagination-disabled) button, .ant-pagination-prev:not(.ant-pagination-disabled) a, .ant-pagination-prev:not(.ant-pagination-disabled), [aria-label="Previous"], [aria-label="prev"], .pagination-prev, .btn-prev');
+            if (prevBtn) {
+                simulateClick(prevBtn);
+                clicked = true;
+            } else {
+                const activeItem = document.querySelector('.ant-pagination-item-active');
+                if (activeItem && activeItem.previousElementSibling && activeItem.previousElementSibling.classList.contains('ant-pagination-item')) {
+                    simulateClick(activeItem.previousElementSibling);
+                    clicked = true;
+                }
+            }
+        }
+
+        // Fallback: If no DOM pagination button found, navigate URL and fetch
+        if (!clicked) {
+            const pageInfo = detectEcomlapPageInfo();
+            const targetPage = direction === 'next' ? (pageInfo.currentPage + 1) : Math.max(1, pageInfo.currentPage - 1);
+            if (targetPage !== pageInfo.currentPage) {
+                try {
+                    const u = new URL(window.location.href);
+                    u.searchParams.set('page', String(targetPage));
+                    window.history.pushState({}, '', u.toString());
+                } catch (e) {}
+            }
+        }
+
+        // Trigger active fetch & update Product Manager UI after navigation
+        setTimeout(() => {
+            fetchProductsFromCurrentSite();
+            setTimeout(renderProductManagerPagination, 300);
+        }, 350);
+    }
+
+    /**
+     * Render and update pagination controls in Product Manager panel
+     */
+    function renderProductManagerPagination() {
+        const panel = document.getElementById('ecomlap-manager-panel');
+        if (!panel) return;
+
+        const pageInfo = detectEcomlapPageInfo();
+
+        // 1. Minimized View (Gallery)
+        const gallery = panel.querySelector('.ecomlap-ideas-gallery');
+        if (gallery) {
+            let pagEl = gallery.querySelector('.vibe-pm-pagination-gallery');
+            if (!pagEl) {
+                pagEl = document.createElement('div');
+                pagEl.className = 'ecomlap-pagination vibe-pm-pagination-gallery';
+                pagEl.style.cssText = `
+                    display: flex !important;
+                    align-items: center !important;
+                    justify-content: space-between !important;
+                    padding: 8px 14px !important;
+                    background: #f8fafc !important;
+                    border-top: 1px solid #e2e8f0 !important;
+                    flex-shrink: 0 !important;
+                    margin-top: auto !important;
+                    z-index: 10 !important;
+                `;
+                gallery.appendChild(pagEl);
+            }
+
+            pagEl.innerHTML = `
+                <div class="pagination-info" style="font-size: 12px; color: #475569; display: flex; align-items: center; gap: 4px;">
+                    <span>Trang <strong>${pageInfo.currentPage}</strong> / <strong>${pageInfo.totalPages}</strong></span>
+                    ${pageInfo.totalItems > 0 ? `<span style="color:#94a3b8;">(${pageInfo.totalItems} sp)</span>` : ''}
+                </div>
+                <div class="pagination-actions" style="display: flex; align-items: center; gap: 6px;">
+                    <button type="button" class="btn btn-sm btn-secondary vibe-btn-prev" ${!pageInfo.hasPrev ? 'disabled' : ''} style="padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: ${pageInfo.hasPrev ? 'pointer' : 'not-allowed'}; opacity: ${pageInfo.hasPrev ? '1' : '0.4'};">
+                        ◀ Trước
+                    </button>
+                    <button type="button" class="btn btn-sm btn-secondary vibe-btn-next" ${!pageInfo.hasNext ? 'disabled' : ''} style="padding: 4px 10px; font-size: 11px; font-weight: 600; cursor: ${pageInfo.hasNext ? 'pointer' : 'not-allowed'}; opacity: ${pageInfo.hasNext ? '1' : '0.4'};">
+                        Sau ▶
+                    </button>
+                </div>
+            `;
+
+            const prevBtn = pagEl.querySelector('.vibe-btn-prev');
+            const nextBtn = pagEl.querySelector('.vibe-btn-next');
+            if (prevBtn && pageInfo.hasPrev) {
+                prevBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    triggerEcomlapPagination('prev');
+                };
+            }
+            if (nextBtn && pageInfo.hasNext) {
+                nextBtn.onclick = (e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    triggerEcomlapPagination('next');
+                };
+            }
+        }
+
+        // 2. Expanded View (Table)
+        // Bind click synchronization to existing React table pagination buttons
+        const leftPanel = panel.querySelector('.ecomlap-left-panel');
+        if (leftPanel) {
+            const reactPag = leftPanel.querySelector('.ecomlap-pagination:not(.vibe-pm-pagination-gallery)');
+            if (reactPag) {
+                const buttons = reactPag.querySelectorAll('button');
+                buttons.forEach(btn => {
+                    const txt = btn.textContent.trim();
+                    if ((txt.includes('Trước') || txt.includes('◀')) && !btn.hasAttribute('data-vibe-bound')) {
+                        btn.setAttribute('data-vibe-bound', 'true');
+                        btn.addEventListener('click', () => {
+                            triggerEcomlapPagination('prev');
+                        }, true);
+                    } else if ((txt.includes('Sau') || txt.includes('▶')) && !btn.hasAttribute('data-vibe-bound')) {
+                        btn.setAttribute('data-vibe-bound', 'true');
+                        btn.addEventListener('click', () => {
+                            triggerEcomlapPagination('next');
+                        }, true);
+                    }
+                });
+            }
         }
     }
 
@@ -1219,6 +1341,7 @@
                 if (cachedLinkedMap && Object.keys(cachedLinkedMap).length > 0) {
                     renderLinkedBadgesAcrossPage(cachedLinkedMap);
                 }
+                renderProductManagerPagination();
             }, 300);
         });
 

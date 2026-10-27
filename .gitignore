@@ -1,0 +1,39 @@
+# Local environment configuration (keep the shareable template)
+.env
+.env.*
+!.env.example
+
+# Private keys and certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local code intelligence indexes and dependencies
+.gitnexus/
+node_modules/
+.npm/
+.cache/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+coverage/
+.nyc_output/
+
+# Packaged extensions and signing artifacts
+*.crx
+*.crx.zip
+*.zip
+
+# Local editor and OS files
+.idea/
+.vscode/
+.claude/settings.local.json
+.DS_Store
+Thumbs.db
+Desktop.ini
