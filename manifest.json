@@ -58,6 +58,7 @@
       ],
       "js": [
         "scripts/content/gemini-content.js",
+        "scripts/link-results.js",
         "scripts/content/link-16vibe-modal.js"
       ],
       "css": [

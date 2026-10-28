@@ -2,7 +2,7 @@
  * Link 16vibe Modal Component
  * Displays modal for syncing/linking selected products to Inkvibe Medusa backend.
  * Fully aligned with reference mockup and supports:
- * - Real personalization configs from Ecomlap
+ * - Personalization templates from InkVibe metadata
  * - Inkvibe hierarchical category tree select & breadcrumbs
  * - Ancestor chain for category_ids (parent -> child)
  * - Multi-image extraction: main_image_url + other_image_url1..10 + additional images
@@ -276,282 +276,36 @@
         return chain;
     }
 
-    /**
-     * Deep scanner for JWT token across all possible storages
-     */
-    function findTokenAnywhere() {
-        try {
-            if (typeof window === 'undefined') return '';
-            const testJwt = (val) => {
-                if (!val || typeof val !== 'string') return false;
-                const trimmed = val.replace(/^Bearer\s+/i, '').trim();
-                return /^eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,}$/.test(trimmed);
-            };
-
-            const directKeys = [
-                'token', 'access_token', 'jwt', 'hmt-token', 'auth_token',
-                'user_token', 'authToken', 'accessToken', 'loginToken',
-                'ecomlap_token', 'ecomlap_jwt', 'admin_token'
-            ];
-
-            for (const k of directKeys) {
-                try {
-                    const v1 = localStorage.getItem(k);
-                    if (testJwt(v1)) return v1.replace(/^Bearer\s+/i, '').trim();
-                    const v2 = sessionStorage.getItem(k);
-                    if (testJwt(v2)) return v2.replace(/^Bearer\s+/i, '').trim();
-                } catch (e) {}
-            }
-
-            for (let i = 0; i < localStorage.length; i++) {
-                const k = localStorage.key(i);
-                const val = localStorage.getItem(k);
-                if (testJwt(val)) return val.replace(/^Bearer\s+/i, '').trim();
-                if (val && (val.startsWith('{') || val.startsWith('['))) {
-                    try {
-                        const parsed = JSON.parse(val);
-                        for (const subKey of directKeys) {
-                            if (parsed && testJwt(parsed[subKey])) {
-                                return parsed[subKey].replace(/^Bearer\s+/i, '').trim();
-                            }
-                        }
-                    } catch (e) {}
-                }
-            }
-
-            for (let i = 0; i < sessionStorage.length; i++) {
-                const k = sessionStorage.key(i);
-                const val = sessionStorage.getItem(k);
-                if (testJwt(val)) return val.replace(/^Bearer\s+/i, '').trim();
-                if (val && (val.startsWith('{') || val.startsWith('['))) {
-                    try {
-                        const parsed = JSON.parse(val);
-                        for (const subKey of directKeys) {
-                            if (parsed && testJwt(parsed[subKey])) {
-                                return parsed[subKey].replace(/^Bearer\s+/i, '').trim();
-                            }
-                        }
-                    } catch (e) {}
-                }
-            }
-
-            const cookies = document.cookie ? document.cookie.split(';') : [];
-            for (const c of cookies) {
-                const parts = c.split('=');
-                const name = (parts[0] || '').trim();
-                const val = decodeURIComponent((parts[1] || '').trim());
-                if (directKeys.includes(name) && testJwt(val)) {
-                    return val.replace(/^Bearer\s+/i, '').trim();
-                }
-                if (testJwt(val)) {
-                    return val.replace(/^Bearer\s+/i, '').trim();
-                }
-            }
-        } catch (e) {}
-        return '';
-    }
-
-    /**
-     * Request Main World page context to fetch Personalization configs via bridge
-     */
-    function fetchPersonalizationConfigsViaMainWorld() {
-        return new Promise((resolve) => {
-            const reqId = 'req_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7);
-            let cleanedUp = false;
-
-            const timer = setTimeout(() => {
-                cleanup();
-                resolve(null);
-            }, 3500);
-
-            function cleanup() {
-                if (cleanedUp) return;
-                cleanedUp = true;
-                clearTimeout(timer);
-                window.removeEventListener('message', onMsg);
-                window.removeEventListener('16vibe-personalization-response', onCustomEvt);
-            }
-
-            function onMsg(event) {
-                if (event.source !== window || !event.data) return;
-                if (event.data.type === '16VIBE_PERSONALIZATION_CONFIGS_RES' && event.data.requestId === reqId) {
-                    cleanup();
-                    resolve(event.data.items || null);
-                }
-            }
-
-            function onCustomEvt(event) {
-                if (event.detail && event.detail.success) {
-                    const data = event.detail.data;
-                    const items = event.detail.items || (Array.isArray(data) ? data : (data?.data || data?.configs || data?.items || []));
-                    cleanup();
-                    resolve(items || null);
-                }
-            }
-
-            window.addEventListener('message', onMsg);
-            window.addEventListener('16vibe-personalization-response', onCustomEvt);
-
-            // Dispatch both CustomEvent and postMessage for maximum compatibility
-            try {
-                window.dispatchEvent(new CustomEvent('16vibe-fetch-personalization', { detail: { requestId: reqId } }));
-            } catch (e) {}
-
-            try {
-                window.postMessage({
-                    type: '16VIBE_FETCH_PERSONALIZATION_CONFIGS_REQ',
-                    requestId: reqId
-                }, '*');
-            } catch (e) {}
-        });
-    }
-
-    /**
-     * Fetch Personalization Configs
-     */
-    async function fetchPersonalizationConfigs() {
-        if (cachedPersonalizationConfigs && cachedPersonalizationConfigs.length > 0) {
-            return cachedPersonalizationConfigs;
-        }
-
-        try {
-            const bridgeItems = await fetchPersonalizationConfigsViaMainWorld();
-            if (Array.isArray(bridgeItems) && bridgeItems.length > 0) {
-                const mapped = bridgeItems.map((c, i) => ({
-                    id: String(c._id || c.id || ('cfg_' + (i + 1))),
-                    name: c.name || c.title || c.code || ('Cấu hình cá nhân hóa #' + (i + 1)),
-                    code: c.code || '',
-                    raw: c
-                }));
-                cachedPersonalizationConfigs = mapped;
-                return mapped;
-            }
-        } catch (e) {}
-
-        const token = findTokenAnywhere();
-        const headers = { 'Accept': 'application/json, text/plain, */*' };
-        if (token) {
-            headers['Authorization'] = 'Bearer ' + token;
-            headers['hmt-token'] = token;
-        }
-
-        try {
-            const res = await fetch('https://ecomlap.com/api/product-personalization-configs?status=active&limit=100', {
-                method: 'GET',
-                credentials: 'include',
-                headers: headers
-            });
-
-            if (res.ok) {
-                const json = await res.json();
-                let items = [];
-                if (Array.isArray(json)) items = json;
-                else if (json.docs && Array.isArray(json.docs)) items = json.docs;
-                else if (json.data && Array.isArray(json.data)) items = json.data;
-                else if (json.configs && Array.isArray(json.configs)) items = json.configs;
-                else if (json.items && Array.isArray(json.items)) items = json.items;
-
-                const mapped = items.map((c, i) => ({
-                    id: String(c._id || c.id || ('cfg_' + (i + 1))),
-                    name: c.name || c.title || c.code || ('Cấu hình cá nhân hóa #' + (i + 1)),
-                    code: c.code || '',
-                    raw: c
-                }));
-
-                if (mapped.length > 0) {
-                    cachedPersonalizationConfigs = mapped;
-                    return mapped;
-                }
-            }
-        } catch (err) {}
-
-        const fallbackPresets = [
-            { id: "6a7b6512d77cfcad9c09f546", name: "Custom Apparel Personalization", code: "custom-apparel" },
-            { id: "6a8f2b36609b55d6ab469626", name: "Custom Hat", code: "custom-hat" },
-            { id: "6a8c077d82248306cfedae9a", name: "11oz & 15oz Mug Personalization - Black", code: "mug-black" },
-            { id: "6724a2c0f124a91bb4c00003", name: "Pet Portrait Artwork Config", code: "pet-portrait" },
-            { id: "6724a2c0f124a91bb4c00004", name: "Poster & Canvas Photo Print", code: "canvas-print" },
-            { id: "6724a2c0f124a91bb4c00006", name: "Holiday Ornament & Greeting Card", code: "ornament-holiday" }
-        ].map(item => ({ ...item, raw: item }));
-
-        return fallbackPresets;
-    }
-
-    /**
-     * Fetch Inkvibe Store Metadata (Categories, Collections, Tags, Sales Channels, Shipping Profiles)
-     */
+    // Both dropdowns share one metadata request, including refreshes.
+    let metadataRequest = null;
     async function fetchInkvibeMetadata(forceRefresh = false) {
-        if (!forceRefresh && cachedInkvibeMetadata && 
-            ((cachedInkvibeMetadata.categories && cachedInkvibeMetadata.categories.length > 0) || 
-             (cachedInkvibeMetadata.collections && cachedInkvibeMetadata.collections.length > 0))) {
-            return cachedInkvibeMetadata;
-        }
-
-        return new Promise((resolve) => {
-            chrome.runtime.sendMessage({ 
-                action: 'getInkvibeMetadata',
-                data: { serverUrl: 'https://api.16vibe.com' }
-            }, (response) => {
-                if (response && response.success && response.data && 
-                    ((response.data.categories && response.data.categories.length > 0) || 
-                     (response.data.collections && response.data.collections.length > 0))) {
-                    cachedInkvibeMetadata = response.data;
-                    cachedCategoriesList = response.data.categories || [];
-                    resolve(response.data);
-                } else {
-                    const fallback = {
-                        categories: [
-                            { id: "pcat_01M2FR96Z8QTGW71HQJG7GK4X7", name: "Apparel", parent_category_id: null, rank: 0 },
-                            { id: "pcat_01M2FR99DWS97R6FWHH2G71MG5", name: "Custom Shirts", parent_category_id: "pcat_01M2FR96Z8QTGW71HQJG7GK4X7", rank: 1 },
-                            { id: "pcat_01M2FR97BSND85NG6SHVF54YJ3", name: "Drinkware", parent_category_id: null, rank: 0 },
-                            { id: "pcat_01M2PSRRAE8486N75SSZDKHXNT", name: "Custom Mugs", parent_category_id: "pcat_01M2FR97BSND85NG6SHVF54YJ3", rank: 1 },
-                            { id: "pcat_01M2PSRRZD77D3N60XPAH6DK1W", name: "Custom Tumblers", parent_category_id: "pcat_01M2FR97BSND85NG6SHVF54YJ3", rank: 2 },
-                            { id: "pcat_01M2FR982ZYBRPXDC13XNVPVF9", name: "Accessories", parent_category_id: null, rank: 0 },
-                            { id: "pcat_01M2Q9SPHXASHFRCADAYTSBVRC", name: "Custom Hats", parent_category_id: "pcat_01M2FR982ZYBRPXDC13XNVPVF9", rank: 1 },
-                            { id: "pcat_01M2PSJW881KETDPD50GWMYGQY", name: "Cards", parent_category_id: null, rank: 0 },
-                            { id: "pcat_01M2PSNXR1N8CMRT431A3TQW41", name: "Custom Greeting Cards", parent_category_id: "pcat_01M2PSJW881KETDPD50GWMYGQY", rank: 1 },
-                            { id: "pcat_01M2PSRP7HKS06EQ02NSQGPTXE", name: "Home Decor", parent_category_id: null, rank: 0 },
-                            { id: "pcat_01M2PSRYV5FJ0Y2DCQ7E198M72", name: "Custom Ornaments", parent_category_id: "pcat_01M2PSRP7HKS06EQ02NSQGPTXE", rank: 1 }
-                        ],
-                        collections: [
-                            { id: "pcol_best_sellers", name: "Best Sellers", title: "Best Sellers" },
-                            { id: "pcol_halloween", name: "Halloween", title: "Halloween" },
-                            { id: "pcol_valentine", name: "Valentine's Day", title: "Valentine's Day" },
-                            { id: "pcol_trending", name: "Trending Gifts", title: "Trending Gifts" },
-                            { id: "pcol_pet_lovers", name: "Pet Lovers", title: "Pet Lovers" }
-                        ],
-                        tags: [
-                            "t-shirt", "16vibe", "ecomlap", "Valentine's Day", "Pet Lovers",
-                            "Vintage", "Custom Shirts", "Custom Mugs", "Gift for Mom", "Gift for Dad"
-                        ],
-                        salesChannels: [
-                            { id: "sc_default", name: "Default Sales Channel" }
-                        ],
-                        shippingProfiles: [
-                            { id: "sp_default", name: "Default Shipping Profile" }
-                        ],
-                        productTypes: [
-                            { id: "pt_shirt", value: "Shirt" },
-                            { id: "pt_hoodie", value: "Hoodie" },
-                            { id: "pt_mug", value: "Mug" }
-                        ],
-                        vendors: [
-                            { id: "admin", name: "Admin", handle: "admin" },
-                            { id: "01M1C02AVPFY4GQBKZKNH4KVE2", name: "InkVibe Studio", handle: "inkvibe-studio" },
-                            { id: "01M1C02B3J6NWS1J39JVDV1AEV", name: "Urban Apparel", handle: "urban-apparel" }
-                        ],
-                        isLive: false
-                    };
-                    cachedCategoriesList = fallback.categories;
-                    resolve(fallback);
-                }
+        if (metadataRequest) return metadataRequest;
+        if (!forceRefresh && cachedInkvibeMetadata && !cachedInkvibeMetadata.personalization_configs_error) return cachedInkvibeMetadata;
+        metadataRequest = new Promise(resolve => {
+            chrome.runtime.sendMessage({ action: 'getInkvibeMetadata', data: {} }, response => {
+                const data = response && response.success && response.data ? response.data : {
+                    personalization_configs: [],
+                    personalization_configs_error: response?.error || 'Không tải được danh sách cá nhân hoá từ InkVibe.'
+                };
+                cachedInkvibeMetadata = data;
+                cachedCategoriesList = data.categories || [];
+                resolve(data);
             });
-        });
+        }).finally(() => { metadataRequest = null; });
+        return metadataRequest;
     }
 
-    /**
-     * Build Hierarchical Category Tree from flat category list
-     */
+    async function fetchPersonalizationConfigs(forceRefresh = false) {
+        const data = await fetchInkvibeMetadata(forceRefresh);
+        if (data.personalization_configs_error) throw new Error(data.personalization_configs_error);
+        if (!Array.isArray(data.personalization_configs)) throw new Error('API InkVibe chưa trả danh sách cá nhân hoá. Cần cập nhật backend.');
+        cachedPersonalizationConfigs = data.personalization_configs
+            .filter(item => item && item.id && item.is_active !== false)
+            .map(item => ({ id: String(item.id), name: item.name || item.id }));
+        return cachedPersonalizationConfigs;
+    }
+
+    /** Build hierarchical categories from the InkVibe metadata. */
     function buildCategoryTree(categories) {
         if (!Array.isArray(categories) || categories.length === 0) return [];
 
@@ -654,11 +408,11 @@
                             <div class="vibe-form-group">
                                 <label class="vibe-form-label" for="vibe-select-personalization">
                                     <span>Cấu hình cá nhân hóa</span>
-                                    <span class="vibe-form-label-hint" id="vibe-hint-personalization-count">ecomlap.com/api/...</span>
+                                    <span class="vibe-form-label-hint" id="vibe-hint-personalization-count">InkVibe</span>
                                 </label>
                                 <div class="vibe-input-wrap-flex">
                                     <select class="vibe-select" id="vibe-select-personalization">
-                                        <option value="">-- Đang nạp cấu hình cá nhân hóa từ Ecomlap... --</option>
+                                        <option value="">-- Đang nạp cấu hình cá nhân hóa từ InkVibe... --</option>
                                     </select>
                                     <button type="button" class="vibe-btn-refresh-field" id="vibe-btn-refresh-pers" title="Làm mới danh sách cá nhân hóa">🔄</button>
                                 </div>
@@ -1102,7 +856,7 @@
         overlay.querySelector('#vibe-btn-refresh-pers').addEventListener('click', async () => {
             const btn = overlay.querySelector('#vibe-btn-refresh-pers');
             btn.style.transform = 'rotate(180deg)';
-            await loadPersonalizationDropdown();
+            await loadPersonalizationDropdown(true);
             setTimeout(() => { btn.style.transform = 'none'; }, 400);
         });
 
@@ -1115,6 +869,7 @@
             }
             try {
                 await loadInkvibeMetadataDropdowns(true);
+                await loadPersonalizationDropdown();
                 if (btn) btn.textContent = '✓ Đã xong';
                 setTimeout(() => { if (btn) { btn.textContent = '🔄 Làm mới'; btn.disabled = false; } }, 1200);
             } catch (err) {
@@ -1547,41 +1302,41 @@
     /**
      * Populate Personalization configs dropdown with real items
      */
-    async function loadPersonalizationDropdown() {
+    async function loadPersonalizationDropdown(forceRefresh = false) {
         const select = document.getElementById('vibe-select-personalization');
         const hint = document.getElementById('vibe-hint-personalization-count');
+        const refresh = document.getElementById('vibe-btn-refresh-pers');
         if (!select) return;
-
-        let savedConfig = {};
+        const currentValue = select.value;
+        select.disabled = true;
+        if (refresh) refresh.disabled = true;
+        select.innerHTML = '<option value="">Đang nạp cấu hình cá nhân hoá từ InkVibe...</option>';
+        cachedPersonalizationConfigs = null;
         try {
-            const st = await new Promise(r => chrome.storage.local.get(['vibe_link_modal_config'], r));
-            if (st && st.vibe_link_modal_config) savedConfig = st.vibe_link_modal_config;
-        } catch(e) {}
-        const prevPersId = select.value || savedConfig.personalization_id || '';
-
-        select.innerHTML = '<option value="">⏳ Đang nạp cấu hình cá nhân hóa từ Ecomlap...</option>';
-        const list = await fetchPersonalizationConfigs();
-
-        select.innerHTML = '';
-        if (list.length === 0) {
-            select.innerHTML = '<option value="">⚠️ Không tải được cấu hình - Bấm nút 🔄 để thử lại</option>';
-            if (hint) hint.textContent = '0 cấu hình (Cần tải lại)';
-            return;
-        }
-
-        if (hint) hint.textContent = list.length + ' cấu hình từ Ecomlap';
-
-        list.forEach((item) => {
-            const opt = document.createElement('option');
-            opt.value = item.id;
-            opt.textContent = item.name;
-            select.appendChild(opt);
-        });
-
-        if (prevPersId && Array.from(select.options).some(o => o.value === prevPersId)) {
-            select.value = prevPersId;
-        } else if (select.options.length > 0) {
-            select.selectedIndex = 0;
+            const st = await new Promise(resolve => chrome.storage.local.get(['vibe_link_modal_config'], resolve));
+            const previous = currentValue || st?.vibe_link_modal_config?.personalization_id || '';
+            const list = await fetchPersonalizationConfigs(forceRefresh);
+            select.replaceChildren();
+            const none = document.createElement('option');
+            none.value = '';
+            none.textContent = '-- Không áp dụng cá nhân hoá --';
+            select.appendChild(none);
+            list.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.id;
+                option.textContent = item.name;
+                select.appendChild(option);
+            });
+            if (list.some(item => item.id === previous)) select.value = previous;
+            if (hint) hint.textContent = list.length ? list.length + ' cấu hình từ InkVibe' : 'Chưa có cấu hình cá nhân hoá đang bật trên InkVibe';
+            if (previous && !list.some(item => item.id === previous) && hint) hint.textContent += ' · Cấu hình cũ không còn trong danh sách, hãy chọn lại.';
+        } catch (err) {
+            select.innerHTML = '<option value="">-- Không áp dụng cá nhân hoá --</option>';
+            cachedPersonalizationConfigs = [];
+            if (hint) hint.textContent = err.message + ' Bấm làm mới để thử lại.';
+        } finally {
+            select.disabled = false;
+            if (refresh) refresh.disabled = false;
         }
     }
 
@@ -1982,6 +1737,31 @@
     /**
      * Handle Link Products Submit
      */
+    function renderLinkResults(results) {
+        let panel = document.getElementById('vibe-link-results');
+        if (!panel) {
+            panel = document.createElement('section');
+            panel.id = 'vibe-link-results';
+            panel.setAttribute('aria-live', 'polite');
+            panel.style.cssText = 'padding:16px;margin:12px;border:1px solid #cbd5e1;border-radius:8px;max-height:320px;overflow:auto;';
+            modalElement?.querySelector('.vibe-modal-body')?.appendChild(panel);
+        }
+        panel.replaceChildren();
+        const labels = { created: 'Tạo mới', updated: 'Cập nhật', skipped: 'Bỏ qua', failed: 'Lỗi' };
+        const summary = document.createElement('strong');
+        summary.textContent = Object.entries(labels).map(([action, label]) => `${label}: ${results.filter(item => item.action === action).length}`).join(' · ');
+        panel.appendChild(summary);
+        results.forEach(item => {
+            const row = document.createElement('div');
+            row.style.cssText = 'padding:8px 0;border-bottom:1px solid #e2e8f0;white-space:pre-wrap;';
+            row.textContent = `${labels[item.action]} — ${item.title || item.handle || item.ecomlap_id || ''}`
+                + (item.reason ? `\n${item.reason}` : '')
+                + (item.id ? `\nID 16vibe: ${item.id}` : '')
+                + (item.warnings || []).map(warning => `\nCảnh báo (${warning.stage}): ${warning.reason}`).join('');
+            panel.appendChild(row);
+        });
+    }
+
     async function handleLinkSubmit() {
         const submitBtn = document.getElementById('vibe-btn-submit-link');
         if (!submitBtn || submitBtn.disabled) return;
@@ -1993,7 +1773,16 @@
             return;
         }
 
-        const personalizationId = document.getElementById('vibe-select-personalization')?.value || '';
+        const personalizationSelect = document.getElementById('vibe-select-personalization');
+        if (personalizationSelect?.disabled) {
+            showToast('Vui lòng đợi danh sách cá nhân hoá tải xong.', 'warning');
+            return;
+        }
+        const personalizationId = personalizationSelect?.value || '';
+        if (personalizationId && !(cachedPersonalizationConfigs || []).some(item => item.id === personalizationId)) {
+            showToast('Cấu hình cá nhân hoá không còn hợp lệ. Hãy tải lại danh sách InkVibe.', 'error');
+            return;
+        }
         const titleTemplate = document.getElementById('vibe-input-title')?.value || '{{item_name}}';
         const handleTemplate = document.getElementById('vibe-input-handle')?.value || '{{item_name}}';
         const updateIfExists = document.getElementById('vibe-chk-update-if-exists')?.checked ?? true;
@@ -2056,7 +1845,7 @@
                         normOptions[title] = String(v[title] || '').trim();
                     });
                     const optVals = Object.values(normOptions).filter(Boolean);
-                    const vPrice = parseFloat(v.price) || basePrice;
+                    const vPrice = v.price === '' || v.price == null ? basePrice : Number(v.price);
                     return {
                         title: optVals.join(' / ') || ('Variant ' + (idx + 1)),
                         options: normOptions,
@@ -2066,13 +1855,14 @@
                 });
             }
 
-            const selectedPersItem = (cachedPersonalizationConfigs || []).find(c => String(c.id) === String(personalizationId));
-            const selectedPersRaw = selectedPersItem?.raw || selectedPersItem || null;
 
             const processedProducts = currentSelectedProducts.map((p, idx) => {
                 const raw = p.raw || p;
                 const name = extractProductName(p, idx);
-                const sku = p.sku || raw.sku || raw._id || p._id || ('SKU-' + (idx + 1));
+                // Use the original API identity, never the widget's generated row ID.
+                const sourceId = raw._id || raw.id || raw.product_id || '';
+                const sku = raw.sku || p.sku || sourceId || '';
+                if (!sku) throw new Error('Sản phẩm ' + name + ' thiếu ID/SKU nguồn ổn định.');
                 const desc = p.description || raw.description || p.prompt || name;
                 const brand = p.brand || raw.brand || '16vibe';
                 const store = p.store_name || raw.store_name || 'Ecomlap Store';
@@ -2139,7 +1929,6 @@
                 const uniqueImages = Array.from(new Set(productImages));
                 const finalThumbnail = uniqueImages.length > 0 ? uniqueImages[0] : (mainImg || '');
 
-                const prodPersRaw = p.personalization_config_data || raw.personalization_config || raw.personalization || raw.customization || selectedPersRaw;
 
                 return {
                     id: p._id || p.id || raw._id || raw.id || '',
@@ -2149,7 +1938,8 @@
                     main_image_url: mainImg,
                     image_url: mainImg,
                     external_id: sku,
-                    ecomlap_id: p._id || p.id || raw._id || '',
+                    ecomlap_id: sourceId,
+                    source_store: store,
                     title: resolvedTitle,
                     name: resolvedTitle,
                     item_name: resolvedTitle,
@@ -2174,17 +1964,17 @@
                     discountable: true,
                     max_quantity: 100,
                     personalization_config_id: personalizationId,
-                    personalization_config_data: prodPersRaw,
+                    personalization_source: 'inkvibe',
                     product_page_template_id: pageTemplateId,
                     metadata: {
                         source: 'ecomlap',
                         external_id: sku,
-                        ecomlap_id: p._id || p.id || '',
+                        ecomlap_id: sourceId,
                         brand: brand,
                         store_name: store,
                         vendor_id: vendorId,
                         personalization_config_id: personalizationId,
-                        personalization_config_data: prodPersRaw,
+                        personalization_source: 'inkvibe',
                         product_page_template_id: pageTemplateId,
                         linked_at: new Date().toISOString()
                     }
@@ -2193,7 +1983,7 @@
 
             const commonConfig = {
                 personalization_config_id: personalizationId,
-                personalization_config_data: selectedPersRaw,
+                personalization_source: 'inkvibe',
                 product_page_template_id: pageTemplateId,
                 status: status,
                 vendor_id: vendorId,
@@ -2270,6 +2060,7 @@
                             window.dispatchEvent(new CustomEvent('16vibe-products-linked-local', {
                                 detail: { linkedMap: linkedMap }
                             }));
+                            renderImagesPreview(currentSelectedProducts);
                             resolve(linkedMap);
                         });
                     });
@@ -2290,11 +2081,8 @@
             }
 
             const totalChunks = chunks.length;
-            let totalSuccess = 0;
-            let totalCreated = 0;
-            let totalUpdated = 0;
-            let failedCount = 0;
-            let lastErrorMessage = '';
+            const allResults = [];
+            document.getElementById('vibe-link-results')?.remove();
 
             const cancelBtn = document.getElementById('vibe-btn-cancel-modal');
             if (cancelBtn) cancelBtn.disabled = true;
@@ -2329,23 +2117,25 @@
                     }, (r) => resolve(r));
                 });
 
-                if (res && res.success) {
-                    totalSuccess += chunk.products.length;
-                    if (res.created_count) totalCreated += res.created_count;
-                    if (res.updated_count) totalUpdated += res.updated_count;
-
-                    // Immediately mark these items as linked in storage & dispatch local event
-                    // so green checkmark badges appear for this batch right now!
-                    await markItemsAsLinked(chunk.selectedItems, chunk.products);
-                } else {
-                    failedCount += chunk.products.length;
-                    lastErrorMessage = (res && res.error) || 'Lỗi server khi liên kết';
-                    console.error('[16vibe] Chunk link failed:', chunk, res);
-
-                    // If unauthorized/bad key, stop early to avoid hammering invalid credentials
-                    if (res && (res.status === 401 || res.status === 403 || String(res.error).toLowerCase().includes('unauthorized') || String(res.error).toLowerCase().includes('secret'))) {
-                        break;
+                const report = VibeLinkResults.normalize(chunk.products, res);
+                const confirmed = report.results.filter(item => item.action !== 'failed');
+                if (confirmed.length) {
+                    await markItemsAsLinked(
+                        confirmed.map(item => chunk.selectedItems[item.input_index]),
+                        confirmed.map(item => chunk.products[item.input_index])
+                    );
+                }
+                allResults.push(...report.results.map(item => ({
+                    ...item,
+                    input_index: chunk.startIndex + item.input_index,
+                    title: chunk.products[item.input_index].title
+                })));
+                renderLinkResults(allResults);
+                if (res && (res.status === 401 || res.status === 403)) {
+                    for (let pending = currentCount; pending < totalProducts; pending++) {
+                        allResults.push({ input_index: pending, title: processedProducts[pending].title, action: 'failed', reason: 'Chưa gửi do lỗi xác thực. Đăng nhập lại rồi thử lại.', warnings: [] });
                     }
+                    break;
                 }
             }
 
@@ -2358,20 +2148,18 @@
                 footerCountEl.textContent = `Đã chọn ${totalProducts} sản phẩm`;
             }
 
-            if (totalSuccess > 0) {
-                if (failedCount === 0) {
-                    showToast(`🎉 Đã liên kết thành công toàn bộ ${totalSuccess} sản phẩm sang Inkvibe!`, 'success');
-                    setTimeout(closeModal, 1500);
-                } else {
-                    showToast(`⚠️ Đã liên kết ${totalSuccess}/${totalProducts} sản phẩm (${failedCount} sản phẩm lỗi: ${lastErrorMessage})`, 'warning');
-                }
-            } else {
-                showToast(`❌ Thất bại: ${lastErrorMessage || 'Lỗi liên kết sản phẩm sang Inkvibe'}`, 'error');
-            }
+            renderLinkResults(allResults);
+            const failedCount = allResults.filter(item => item.action === 'failed').length;
+            const warningCount = allResults.reduce((count, item) => count + item.warnings.length, 0);
+            showToast(failedCount ? `${failedCount}/${totalProducts} sản phẩm lỗi. Xem chi tiết bên dưới.`
+                : warningCount ? 'Đã xử lý; có cảnh báo cần kiểm tra bên dưới.' : 'Đã xử lý xong các sản phẩm đã chọn.',
+                failedCount || warningCount ? 'warning' : 'success');
 
         } catch (err) {
             submitBtn.disabled = false;
             submitBtn.innerHTML = originalBtnHtml;
+            const cancelBtn = document.getElementById('vibe-btn-cancel-modal');
+            if (cancelBtn) cancelBtn.disabled = false;
             showToast('Lỗi khi xử lý liên kết sản phẩm: ' + err.message, 'error');
         }
     }
@@ -2424,7 +2212,7 @@
                     if (id || title) {
                         const finalName = title || ('Sản phẩm #' + (idx + 1));
                         foundFromDom.push({
-                            _id: id || ('prod_' + (idx + 1)),
+                            _id: id,
                             id: id,
                             name: finalName,
                             title: finalName,

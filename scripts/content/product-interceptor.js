@@ -532,82 +532,6 @@
                 return '';
             }
 
-            function extractTitleFromRow(container) {
-                if (!container) return '';
-
-                // 1. Check explicit title and name selectors
-                const explicitSelectors = [
-                    '[data-field="item_name"]',
-                    '[data-field="product_name"]',
-                    '[data-field="name"]',
-                    '[data-field="title"]',
-                    '.item-name',
-                    '.product-name',
-                    '.item-title',
-                    '.product-title',
-                    '[class*="item-name"]',
-                    '[class*="product-name"]',
-                    '[class*="item_name"]',
-                    '[class*="product_name"]',
-                    '[class*="itemTitle"]',
-                    '[class*="productTitle"]',
-                    'a[href*="/product/"]',
-                    'a[href*="/products/"]',
-                    'a[href*="/item/"]',
-                    'a[href*="/items/"]'
-                ];
-
-                for (const sel of explicitSelectors) {
-                    const el = container.querySelector(sel);
-                    if (el) {
-                        const txt = el.textContent.trim();
-                        if (txt && txt.length > 2 && !/^(select all|chọn tất cả|hành động|action|sửa|xóa|view|edit)$/i.test(txt)) {
-                            return txt;
-                        }
-                    }
-                }
-
-                // 2. Scan all cells if table row
-                const cells = Array.from(container.querySelectorAll('td, th'));
-                if (cells.length > 0) {
-                    const candidates = [];
-                    cells.forEach((td, cIdx) => {
-                        if (td.querySelector('input[type="checkbox"]')) return;
-                        const hasImg = td.querySelector('img');
-                        const txt = td.textContent.trim();
-                        if (hasImg && txt.length < 3) return;
-
-                        if (/^(\$|₫|USD|VND)?\s*\d+([.,]\d+)?\s*(\$|₫|USD|VND)?$/i.test(txt)) return;
-                        if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(txt)) return;
-                        if (/^(active|inactive|draft|published|pending|đã dùng|chưa dùng|đã xuất bản)$/i.test(txt)) return;
-                        if (/^(edit|delete|view|sửa|xóa|xem|link|chi tiết|action)$/i.test(txt)) return;
-
-                        const link = td.querySelector('a');
-                        if (link && link.textContent.trim().length > 3) {
-                            candidates.push({ text: link.textContent.trim(), score: 50 + link.textContent.trim().length });
-                            return;
-                        }
-
-                        if (txt.length > 3) {
-                            candidates.push({ text: txt, score: txt.length });
-                        }
-                    });
-
-                    if (candidates.length > 0) {
-                        candidates.sort((a, b) => b.score - a.score);
-                        return candidates[0].text;
-                    }
-                }
-
-                // 3. Fallback for cards / grid
-                const cardTitle = container.querySelector('.title, .name, h3, h4, h5, a');
-                if (cardTitle && cardTitle.textContent.trim().length > 2) {
-                    return cardTitle.textContent.trim();
-                }
-
-                return '';
-            }
-
             // 1. Scan table rows
             const rows = document.querySelectorAll('table tbody tr');
             if (rows.length > 0) {
@@ -885,6 +809,13 @@
         });
 
         // Listen for local custom events when products linked
+        chrome.storage.onChanged.addListener((changes, area) => {
+            if (area === 'local' && changes.linked_products_map) {
+                cachedLinkedMap = changes.linked_products_map.newValue || {};
+                renderLinkedBadgesAcrossPage(cachedLinkedMap);
+            }
+        });
+
         window.addEventListener('16vibe-products-linked-local', (e) => {
             if (e.detail && e.detail.linkedMap) {
                 cachedLinkedMap = e.detail.linkedMap;
@@ -915,7 +846,8 @@
         // 1. Direct ID / SKU match
         if (id) {
             const strId = String(id).trim();
-            if (map[strId]) return true;
+            // A known ID must not inherit another product's badge via shared images/title.
+            return Boolean(map[strId]);
         }
 
         // 2. Image URL match (exact, clean, or by unique filename)
@@ -971,8 +903,84 @@
         return badge;
     }
 
+    function extractTitleFromRow(container) {
+        if (!container) return '';
+
+        // 1. Check explicit title and name selectors
+        const explicitSelectors = [
+            '[data-field="item_name"]',
+            '[data-field="product_name"]',
+            '[data-field="name"]',
+            '[data-field="title"]',
+            '.item-name',
+            '.product-name',
+            '.item-title',
+            '.product-title',
+            '[class*="item-name"]',
+            '[class*="product-name"]',
+            '[class*="item_name"]',
+            '[class*="product_name"]',
+            '[class*="itemTitle"]',
+            '[class*="productTitle"]',
+            'a[href*="/product/"]',
+            'a[href*="/products/"]',
+            'a[href*="/item/"]',
+            'a[href*="/items/"]'
+        ];
+
+        for (const sel of explicitSelectors) {
+            const el = container.querySelector(sel);
+            if (el) {
+                const txt = el.textContent.trim();
+                if (txt && txt.length > 2 && !/^(select all|chọn tất cả|hành động|action|sửa|xóa|view|edit)$/i.test(txt)) {
+                    return txt;
+                }
+            }
+        }
+
+        // 2. Scan all cells if table row
+        const cells = Array.from(container.querySelectorAll('td, th'));
+        if (cells.length > 0) {
+            const candidates = [];
+            cells.forEach((td, cIdx) => {
+                if (td.querySelector('input[type="checkbox"]')) return;
+                const hasImg = td.querySelector('img');
+                const txt = td.textContent.trim();
+                if (hasImg && txt.length < 3) return;
+
+                if (/^(\$|₫|USD|VND)?\s*\d+([.,]\d+)?\s*(\$|₫|USD|VND)?$/i.test(txt)) return;
+                if (/^\d{1,2}[/-]\d{1,2}[/-]\d{2,4}/.test(txt)) return;
+                if (/^(active|inactive|draft|published|pending|đã dùng|chưa dùng|đã xuất bản)$/i.test(txt)) return;
+                if (/^(edit|delete|view|sửa|xóa|xem|link|chi tiết|action)$/i.test(txt)) return;
+
+                const link = td.querySelector('a');
+                if (link && link.textContent.trim().length > 3) {
+                    candidates.push({ text: link.textContent.trim(), score: 50 + link.textContent.trim().length });
+                    return;
+                }
+
+                if (txt.length > 3) {
+                    candidates.push({ text: txt, score: txt.length });
+                }
+            });
+
+            if (candidates.length > 0) {
+                candidates.sort((a, b) => b.score - a.score);
+                return candidates[0].text;
+            }
+        }
+
+        // 3. Fallback for cards / grid
+        const cardTitle = container.querySelector('.title, .name, h3, h4, h5, a');
+        if (cardTitle && cardTitle.textContent.trim().length > 2) {
+            return cardTitle.textContent.trim();
+        }
+
+        return '';
+    }
+
     function renderLinkedBadgesAcrossPage(linkedMap) {
-        if (!linkedMap || Object.keys(linkedMap).length === 0) return;
+        if (!linkedMap || typeof linkedMap !== 'object') return;
 
         try {
             // 1. Table rows on Ecomlap (e.g. table tbody tr, .ant-table-row)
@@ -1015,6 +1023,8 @@
             // 2. Product cards / grid items on Ecomlap
             const cards = document.querySelectorAll('.product-card, .product-item, [data-product], [data-product-id], .card, .ant-card, [class*="card"]');
             cards.forEach((card) => {
+                // The extension gallery has its own stable-ID renderer below.
+                if (card.closest('#ecomlap-manager-panel')) return;
                 const title = extractTitleFromRow(card) || card.querySelector('.title, .name, [class*="title"], [class*="name"]')?.textContent?.trim() || '';
                 const id = card.getAttribute('data-product-id') 
                     || card.getAttribute('data-id') 
@@ -1064,7 +1074,7 @@
                     const thumb = item.querySelector('.idea-thumb, .td-image') || item;
                     if (thumb && !thumb.querySelector('.vibe-linked-badge')) {
                         const cs = window.getComputedStyle(thumb);
-                        if (cs.position === 'static') {
+                        if (!cs.position || cs.position === 'static') {
                             thumb.style.position = 'relative';
                         }
                         thumb.appendChild(createBadgeElement(`Đã liên kết với 16vibe`));
@@ -1076,6 +1086,7 @@
                         if (!thumbEl.querySelector('.badge-linked-16vibe')) {
                             const badgeSpan = document.createElement('span');
                             badgeSpan.className = 'badge-linked-16vibe';
+                            badgeSpan.style.cssText = 'position: absolute; bottom: 6px; left: 6px; background: #059669; color: white; padding: 3px 7px; border-radius: 4px; font-size: 12px; font-weight: 600; pointer-events: none;';
                             badgeSpan.innerHTML = '✓ Đã link';
                             thumbEl.appendChild(badgeSpan);
                         }
